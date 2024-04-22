@@ -8,7 +8,7 @@ conda env create -n <ENV_NAME> -f environment.yaml
 ```bash
 conda activate <ENV_NAME>
 ```
-The `environment.yaml` file includes all dependencies for the project except for gym-pybullet-drones,
+The `environment.yaml` file includes all dependencies for the project except for [gym-pybullet-drones](https://github.com/utiasDSL/gym-pybullet-drones),
 which needs to be built separately. The following should be sufficient to install the latest version, 
 but see the repository for more information if needed.
 ```bash
