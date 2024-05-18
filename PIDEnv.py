@@ -162,6 +162,7 @@ class MultiDroneEnv(object):
         args = self.args
         # The action from the PID controller is motor speed for each motor.
         for j in range(args.num_drones):
+            p,v,r,w = self.obs[j][:]# find indices to get geometric controller state
             self.action[j, :], _, _ = self.ctrl[j].computeControlFromState(control_timestep=self.env.CTRL_TIMESTEP,
                                                                  state=self.obs[j],
                                                                  target_pos=self.TARGET_POSITIONS[j, :],

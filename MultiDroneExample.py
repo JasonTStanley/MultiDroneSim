@@ -65,6 +65,9 @@ def create_env(args):
                      user_debug_gui=args.user_debug_gui,
                      output_folder=args.output_folder
                      )
+    print(env.M)
+    print(env.J)
+    exit()
     return env
 
 
@@ -76,6 +79,7 @@ def do_control(args, env):
 
     # PID control for set point regulation
     ctrl = []
+
     if args.drone in [DroneModel.CF2X, DroneModel.CF2P]:
         for i in range(args.num_drones):
             ctrl.append(DSLPIDControl(drone_model=args.drone))
@@ -89,6 +93,7 @@ def do_control(args, env):
 
     # Conversion matrix between motor speeds and thrust and torques.
     r = env.KM / env.KF
+
     # convert between RPM and thrust/torques for a PLUS frame drone (CF2P) (is the Crazyflie 2.1 with plus config)
     conversion_mat = np.array([[1.0, 1.0, 1.0, 1.0],
                                [0.0, env.L, 0.0, -env.L],

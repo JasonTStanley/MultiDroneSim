@@ -85,8 +85,7 @@ class GeometricControl:
         R_des = np.vstack((b1d, b2d, b3d)).T
 
         # Desired angular velocity
-        b1c_dot = np.array(
-            [-np.sin(self.desired_yaw) * self.desired_omega, np.cos(self.desired_yaw) * self.desired_omega, 0])
+        b1c_dot = np.array([-np.sin(self.desired_yaw) * self.desired_omega, np.cos(self.desired_yaw) * self.desired_omega, 0])
         f_des_dot_world = self.m * R @ np.diag(self.Kp) @ (v - RT @ v_des) / np.linalg.norm(f_des_world)
         b3d_dot = np.cross(np.cross(b3d, f_des_dot_world), b3d)
         b2d_dot = np.cross(

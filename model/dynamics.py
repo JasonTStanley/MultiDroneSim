@@ -4,6 +4,20 @@ from scipy.spatial.transform import Rotation
 
 
 class QuadrotorDynamics:
+
+    def load_env_params(self, env):
+        self.m = env.M
+        self.Ixx = env.J[0, 0]
+        self.Iyy = env.J[1, 1]
+        self.Izz = env.J[2, 2]
+        self.g = env.G
+        self.kf = env.KF
+        self.sim_freq = env.PYB_FREQ
+        self.dt = 1.0 / self.sim_freq
+
+        self.J = np.diag([self.Jxx, self.Jyy, self.Jzz])
+        self.J_inv = np.linalg.inv(self.J)
+
     def __init__(self, sim_freq, init_position=None, init_rpys=None):
         # Hummingbird
         # Source: https://github.com/ethz-asl/rotors_simulator
@@ -87,7 +101,8 @@ class QuadrotorDynamics:
         w_dot = np.matmul(self.J_inv, torques - np.cross(w, np.matmul(self.J, w)))
         b_a_dot = n_a
         b_w_dot = n_w
-        y_dot = np.hstack((x_dot, R_dot.flatten(), v_dot, w_dot, b_a_dot, b_w_dot))
+        # y_dot = np.hstack((x_dot, R_dot.flatten(), v_dot, w_dot)) # b_a_dot, b_w_dot))
+        y_dot = np.hstack((x_dot, w, v_dot, w_dot))
         return y_dot
 
     def step(self, action):
