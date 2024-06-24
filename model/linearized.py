@@ -30,9 +30,11 @@ class LinearizedModel:
         self.g = env.G
         self.A = np.zeros((12, 12))
         self.B = np.zeros((12, 4))
-        self.D = np.zeros((12, 6))
+        self.C = np.eye(12)
+        self.D = np.zeros((12, 6)) #dissapation matrix
         self.env = env
-
+        self.Ahat = np.zeros((12, 12))
+        self.Bhat = np.zeros((12, 4))
         self.init_matrices()
 
 
@@ -44,6 +46,8 @@ class LinearizedModel:
 
             print("D matrix: ")
             print(self.D)
+
+
 
     def init_matrices(self):
 
@@ -58,6 +62,16 @@ class LinearizedModel:
         self.D[:, 2:] = self.B.copy()
         self.D[7, 1] = 1.0 / self.mass
         self.D[6, 0] = 1.0 / self.mass
+
+        #initialize Ahat and Bhat to be a slight permutation of A and B
+        self.Ahat = self.A.copy()
+        self.Ahat[6, 1] = -self.g*0.9
+        self.Ahat[7, 0] = self.g*0.9
+
+        self.Bhat = self.B.copy()
+        self.Bhat[3:6, 1:] = np.array([[1 / self.Ixx, 0, 0], [0, 1 / self.Iyy, 0], [0, 0, 1 / self.Izz]]) * 1.1
+        self.Bhat[8, 0] = (1.0 / self.mass) * 1.1
+
 
 
     def calc_xdot_from_obs(self, obs):

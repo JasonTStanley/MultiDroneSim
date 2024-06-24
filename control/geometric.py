@@ -1,10 +1,13 @@
 import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.spatial.transform import Rotation
-
-
-class GeometricControl:
-    def __init__(self, mass, inertia):
+from utils import obs_to_geo_model, input_to_action
+from control.base_controller import BaseController
+class GeometricControl(BaseController):
+    def __init__(self, env):
+        super().__init__(env)
+        mass = env.M
+        inertia = env.J
         self.m = mass
         self.J = inertia
 
@@ -51,11 +54,12 @@ class GeometricControl:
         self.desired_yaw = desired_yaw
         self.desired_omega = desired_omega
 
-    def compute(self, current_state):
+    def compute(self, obs):
         '''
         NOTES:
         - Velocities are represented in the body-frame
         '''
+        current_state = obs_to_geo_model(obs)
         p, R, v, w = current_state[:3], current_state[3:12], current_state[12:15], current_state[15:]
         p_des, v_des, a_des = self.desired_position, self.desired_velocity, self.desired_acceleration
 
@@ -101,5 +105,4 @@ class GeometricControl:
 
         # Control
         u = np.hstack((max(0., f_des_body[2]), torque))
-
-        return u
+        return input_to_action(self.env, u)

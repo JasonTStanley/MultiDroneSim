@@ -21,7 +21,7 @@ def rpy_to_rot(rpy):
 def obs_to_lin_model(obs):
     x = np.zeros((12,))
 
-    cur_pos = obs[0:3]
+    cur_pos = to_ned @ obs[0:3]
     cur_quat = obs[3:7]
     cur_euler_body = obs[7:10]
     cur_euler = to_ned @ cur_euler_body # essientially just multiply the y and z by a negative 1
@@ -59,6 +59,8 @@ def action_to_input(env, action):
 
 def input_to_action(env, u):
     r = env.KM / env.KF
+    #if the body force is negative, set it to 0, but still control torques.
+    u[0] = np.clip(u[0], 0, None)
     # convert between motor_thrusts and thrust/torques for a PLUS frame drone (CF2P) (is the Crazyflie 2.1 with plus config)
     conversion_mat = np.array([[1.0, 1.0, 1.0, 1.0],
                                [0.0, env.L, 0.0, -env.L],
@@ -66,6 +68,10 @@ def input_to_action(env, u):
                                [-r, r, -r, r]])
     u_to_motor_thrusts = np.linalg.inv(conversion_mat)
     motor_thrusts = u_to_motor_thrusts @ u
+    #ensure motor thrusts are positive
+    #consider setting min thrust to something like .005*env.M*env.G
+    motor_thrusts = np.clip(motor_thrusts, 0, None)
+    #if motor thrusts are negative, move to minimum value
     rpms = np.sqrt(motor_thrusts / env.KF)
     action = rpms
     return action
@@ -80,6 +86,7 @@ def obs_to_geo_model(obs):
     x[12:15] = obs[10:13]
     x[15:] = obs[13:16]
     return x
+
 def geo_model_to_obs(x):
     obs = np.zeros((16,))
     obs[:3] = x[:3]

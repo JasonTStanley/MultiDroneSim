@@ -6,25 +6,28 @@ import time
 
 import numpy as np
 # Pybullet drone environment
-from control import GeometricControl
+from control import GeometricControl, LQRController, DecentralizedLQR
 from gym_pybullet_drones.envs.BaseAviary import DroneModel, Physics
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.utils.utils import sync, str2bool
 from scipy.spatial.transform import Rotation
 import utils.model_conversions as conversions
+from model import LinearizedModel
+from utils import logging, obs_to_lin_model
+from trajectories import Lemniscate
 
 DEFAULT_DRONES = DroneModel("cf2p")
 DEFAULT_PHYSICS = Physics("pyb")
-DEFAULT_GUI = True
-DEFAULT_PLOT = True
+DEFAULT_GUI = True #usually true
+DEFAULT_PLOT = False #usually true
 DEFAULT_RECORD = False
 DEFAULT_USER_DEBUG_GUI = False
 DEFAULT_SIMULATION_FREQ_HZ = 100
 DEFAULT_CONTROL_FREQ_HZ = 100
-DEFAULT_DURATION_SEC = 3
+DEFAULT_DURATION_SEC = 50
 DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_NUM_DRONES = 1 #2
-
+controllers = ['lqr', 'geometric'] #whichever is first will be default
 
 def parse_args():
     #### Define and parse (optional) arguments for the script ##
@@ -51,6 +54,8 @@ def parse_args():
                         help='Folder where to save logs (default: "results")', metavar='')
     parser.add_argument('--init_rad', default=1.0, type=float,
                         help='Initial radius of the drones (default: 1.0)', metavar='')
+    parser.add_argument('--controller', default=controllers[0], type=str,
+                        help=f'Controller to use from {controllers} (default: {controllers[0]})', metavar='')
     ARGS = parser.parse_args()
     return ARGS
 
@@ -66,9 +71,12 @@ class GeometricEnv:
         self.TARGET_POSITIONS = np.zeros((args.num_drones, 3))
         self.TARGET_RPYS = np.zeros((args.num_drones, 3))
         self.obs_ts = []
+        self.linear_model = None
+
         if circle_init:
             self.starting_target_offset = 1  # initial goal is just 1m above start pose
             self.circle_initialize()
+
 
     def create_env(self, gui=True):
         args = self.args
@@ -84,6 +92,7 @@ class GeometricEnv:
                          output_folder=args.output_folder
                      )
         self.env = env
+        self.linear_model = LinearizedModel(env)
 
         r = self.env.KM / self.env.KF
         # convert between motor_thrusts and thrust/torques for a PLUS frame drone (CF2P) (is the Crazyflie 2.1 with plus config)
@@ -93,6 +102,107 @@ class GeometricEnv:
                                    [-r, r, -r, r]])
         return self.env
 
+
+    def FedCE(self):
+        env = self.env
+        args = self.args
+        PYB_CLIENT = env.getPyBulletClient()
+        PYB_CLIENT = env.getPyBulletClient()
+        DRONE_IDS = env.getDroneIds()
+        env._showDroneLocalAxes(0)
+
+        # ctrl = []
+        #
+        # if args.drone in [DroneModel.CF2X, DroneModel.CF2P]:
+        #     for i in range(args.num_drones):
+        #         if args.controller == "geometric":
+        #             geo_ctrl = GeometricControl(env)
+        #             ctrl.append(geo_ctrl)
+        #         if args.controller == 'lqr':
+        #             lqr_ctrl = LQRController(env, self.linear_model)
+        #             ctrl.append(lqr_ctrl)
+
+        # Conversion matrix between motor speeds and thrust and torques.
+        r = env.KM / env.KF
+        # convert between motor_thrusts and thrust/torques for a PLUS frame drone (CF2P) (is the Crazyflie 2.1 with plus config)
+        conversion_mat = np.array([[1.0, 1.0, 1.0, 1.0],
+                                   [0.0, env.L, 0.0, -env.L],
+                                   [-env.L, 0.0, env.L, 0.0],
+                                   [-r, r, -r, r]])
+        thrust_to_rpm = np.linalg.inv(conversion_mat)
+
+        # Run the simulation
+        START = time.time()
+        action = np.zeros((args.num_drones, 4))
+        obs, _, _, _, _ = env.step(action)
+        # CTRL_STEPS = int(args.duration_sec * env.CTRL_FREQ)
+        TW = 1000
+        t = 0
+        dLQR = DecentralizedLQR(env, [self.linear_model])
+        traj = Lemniscate(center=np.array([0, 0, .5]), omega=0.5)
+
+        for i in range(TW):
+            phis = []
+            x_tp1s = []
+            action = np.zeros((args.num_drones, 4))
+
+            pos, vel, acc = traj(t)
+            x_des = np.hstack([[0, 0, 0], np.zeros((3,)), vel, pos])
+            for j in range(args.num_drones):
+                x = obs_to_lin_model(obs[j])
+                # u = dLQR.sigma1()
+                #act = conversions.input_to_action(env, u)
+                e = dLQR.error_state(x, x_des)
+                act = dLQR.LQR(obs[j], pos=pos, vel=vel)
+
+                u = conversions.action_to_input(env, act)
+                #since we have a setpoint, we must calculate the error state to learn theta
+                action[j, :] = act
+                phis.append(np.hstack([e, u])) #use error state as input state to update phi
+                # phis.append(np.hstack([x, u]))
+
+            obs, _, _, _, _ = env.step(action)
+            self.obs = obs
+            if t >= 1:
+                print("t>=1")
+            self.observations.append(obs)
+            self.obs_ts.append(t)
+            t += env.CTRL_TIMESTEP
+
+            for j in range(args.num_drones):
+                #need to offset by the error
+
+                x_tp1 = obs_to_lin_model(obs[j])
+                e_tp1 = dLQR.error_state(x_tp1, x_des)
+                x_tp1s.append(x_tp1)
+
+            # update the theta and V values
+            dLQR.theta_update(phis, x_tp1s)
+
+            env.render()
+            sync(i, START, env.CTRL_TIMESTEP)
+
+
+
+            # for j in range(args.num_drones):
+            #     ctrl[j].set_desired_trajectory(desired_pos=self.TARGET_POSITIONS[j, :], desired_vel=np.zeros((3,)),
+            #                                    desired_acc=np.zeros((3,)), desired_yaw=self.TARGET_RPYS[j, :][2],
+            #                                    desired_omega=0)
+            #     action[j, :] = ctrl[j].compute(obs[j])
+
+        #compare theta to the true linear model
+        # print("Theta: ", dLQR.theta)
+        thetaA = dLQR.theta[:12, :].T
+        thetaB = dLQR.theta[12:, :].T
+        with np.printoptions(precision=3, suppress=True):
+            print("Theta A:\n ", thetaA)
+            print("Theta B:\n ", thetaB)
+            print("True A:\n ", self.linear_model.A)
+            print("True B:\n ", self.linear_model.B)
+        # Close the environment
+        env.close()
+        dLQR.compute_controller()
+        return dLQR.K
 
     def do_control(self):
         env = self.env
@@ -105,11 +215,19 @@ class GeometricEnv:
 
         # PID control for set point regulation
         ctrl = []
-
+        traj = Lemniscate(center=np.array([0, 0, .5]), omega=.25)
         if args.drone in [DroneModel.CF2X, DroneModel.CF2P]:
             for i in range(args.num_drones):
-                geo_ctrl = GeometricControl(env.M, env.J)
-                ctrl.append(geo_ctrl)
+                if args.controller == "geometric":
+                    geo_ctrl = GeometricControl(env)
+                    ctrl.append(geo_ctrl)
+                if args.controller == 'lqr':
+                    lqr_ctrl = LQRController(env, self.linear_model)
+                    ctrl.append(lqr_ctrl)
+                if args.controller == 'dlqr':
+                    dLQR = DecentralizedLQR(env, [self.linear_model])
+                    dLQR.K = computed_K
+                    ctrl.append(dLQR)
         # Conversion matrix between motor speeds and thrust and torques.
         r = env.KM / env.KF
         # convert between motor_thrusts and thrust/torques for a PLUS frame drone (CF2P) (is the Crazyflie 2.1 with plus config)
@@ -127,26 +245,18 @@ class GeometricEnv:
         t = 0
         for i in range(CTRL_STEPS):
             for j in range(args.num_drones):
-                cur_pos = obs[j][0:3]
-                cur_quat = obs[j][3:7]
-                curr_R = Rotation.from_quat(cur_quat).as_matrix().flatten()
-                cur_vel = obs[j][10:13]
-                cur_ang_vel = obs[j][13:16]
-                #need to check frame of cur_vel
-                current_state = np.concatenate([cur_pos,curr_R, cur_vel, cur_ang_vel])
-                # p, R, v, w = current_state[:3], current_state[3:12], current_state[12:15], current_state[15:]
-                ctrl[j].set_desired_trajectory(desired_pos=self.TARGET_POSITIONS[j, :], desired_vel=np.zeros((3,)),
-                                               desired_acc=np.zeros((3,)), desired_yaw=self.TARGET_RPYS[j, :][2],
-                                               desired_omega=0)
-                u = ctrl[j].compute(current_state)
+                # ctrl[j].set_desired_trajectory(desired_pos=self.TARGET_POSITIONS[j, :], desired_vel=np.zeros((3,)),
+                #                                desired_acc=np.zeros((3,)), desired_yaw=self.TARGET_RPYS[j, :][2],
+                #                                desired_omega=0)
+                pos, vel, acc = traj(t)
+                ctrl[j].set_desired_trajectory(desired_pos=pos, desired_vel=vel, desired_acc=acc, desired_yaw=0,
+                                              desired_omega=0)
+                action[j,:] = ctrl[j].compute(obs[j])
 
-                motor_thrusts = thrust_to_rpm @ u
-                rpms = np.sqrt(motor_thrusts / env.KF)
-                action[j,:] = rpms
                 # logging.info(f"Action:\n {action}")
                 # logging.info(f"Obs:\n {obs[0]}")
-                # logging.info(f"Target Pos:\n {TARGET_POSITIONS[0, :]}")
-                # logging.info(f"Target RPY:\n {TARGET_RPYS[0, :]}")
+                # logging.info(f"Target Pos:\n {self.TARGET_POSITIONS[0, :]}")
+                # logging.info(f"Target RPY:\n {self.TARGET_RPYS[0, :]}")
 
             # Apply the control input
             obs, _, _, _, _ = env.step(action)
@@ -195,14 +305,25 @@ class GeometricEnv:
         # initialize the target positions and orientations to just be a vertical offset of starting positions
 
         for i in range(args.num_drones):
+            self.INIT_RPYS[i,2] = 0
             self.TARGET_POSITIONS[i, 0] = self.INIT_XYZS[i, 0]
             self.TARGET_POSITIONS[i, 1] = self.INIT_XYZS[i, 1]
             self.TARGET_POSITIONS[i, 2] = self.INIT_XYZS[i, 2] + self.starting_target_offset
 
+        for i in range(args.num_drones):
+            self.TARGET_RPYS[i, 0] = 0
+            self.TARGET_RPYS[i, 1] = 0
+            self.TARGET_RPYS[i, 2] = 0
 
 
 if __name__ == "__main__":
     ARGS = parse_args()
     geo = GeometricEnv(ARGS, circle_init=True)
     env = geo.create_env()
+    computed_K = geo.FedCE()
+    exit()
+    env = geo.create_env()
+    geo.args.controller = 'dlqr'
     geo.do_control()
+    # geo.do_control()
+    np.save("observations.npy", geo.observations)

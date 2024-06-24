@@ -1,0 +1,1 @@
+from trajectories.Lemniscate import *

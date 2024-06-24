@@ -1,1 +1,2 @@
 from model.dynamics import QuadrotorDynamics
+from model.linearized import LinearizedModel
