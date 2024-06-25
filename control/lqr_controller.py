@@ -55,10 +55,13 @@ class LQRController(BaseController):
         self.K = la.solve(self.R, self.lin_model.B.T @ self.P)
 
     def set_desired_trajectory(self, desired_pos, desired_vel, desired_acc, desired_yaw, desired_omega):
-        # offset pos by desired_pos for now
-        self.desired_pos = utils.to_ned @ desired_pos
-        self.desired_vel = utils.to_ned @ desired_vel
-        self.desired_yaw = -desired_yaw
+        # self.desired_pos = utils.to_ned @ desired_pos
+        # self.desired_vel = utils.to_ned @ desired_vel
+        # self.desired_yaw = -desired_yaw
+
+        self.desired_pos = desired_pos
+        self.desired_vel = desired_vel
+        self.desired_yaw = desired_yaw
 
     def step_cost(self, x, u):
         return x.T @ self.Q @ x + u.T @ self.R @ u
@@ -78,8 +81,8 @@ class LQRController(BaseController):
 
         # e[2] = (e[2] + np.pi) % (2*np.pi) - np.pi # signed angle
         u = -self.K @ e
-        u[0] = -1 * u[0] # put into body frame
-        u[1:] = utils.to_ned @ u[1:]
+        # u[0] = -1 * u[0] # put into body frame
+        # u[1:] = utils.to_ned @ u[1:]
         action = input_to_action(self.env, u)
         print(f"wz: {e[5]}, yaw: {e[2]}, action: {action}")
         if (action == np.zeros(4)).any():

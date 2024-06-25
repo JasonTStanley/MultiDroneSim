@@ -146,14 +146,14 @@ class GeometricEnv:
             x_tp1s = []
             action = np.zeros((args.num_drones, 4))
 
-            pos, vel, acc = traj(t)
+            pos, vel, acc, yaw, omega = traj(t)
             x_des = np.hstack([[0, 0, 0], np.zeros((3,)), vel, pos])
             for j in range(args.num_drones):
                 x = obs_to_lin_model(obs[j])
                 # u = dLQR.sigma1()
                 #act = conversions.input_to_action(env, u)
                 e = dLQR.error_state(x, x_des)
-                act = dLQR.LQR(obs[j], pos=pos, vel=vel)
+                act = dLQR.LQR(obs[j], pos=pos, vel=vel, yaw=yaw, omega=omega)
 
                 u = conversions.action_to_input(env, act)
                 #since we have a setpoint, we must calculate the error state to learn theta
@@ -215,7 +215,7 @@ class GeometricEnv:
 
         # PID control for set point regulation
         ctrl = []
-        traj = Lemniscate(center=np.array([0, 0, .5]), omega=.25)
+        traj = Lemniscate(center=np.array([0, 0, .5]), omega=.25, yaw_rate=0.1)
         if args.drone in [DroneModel.CF2X, DroneModel.CF2P]:
             for i in range(args.num_drones):
                 if args.controller == "geometric":
@@ -245,12 +245,12 @@ class GeometricEnv:
         t = 0
         for i in range(CTRL_STEPS):
             for j in range(args.num_drones):
-                # ctrl[j].set_desired_trajectory(desired_pos=self.TARGET_POSITIONS[j, :], desired_vel=np.zeros((3,)),
-                #                                desired_acc=np.zeros((3,)), desired_yaw=self.TARGET_RPYS[j, :][2],
-                #                                desired_omega=0)
-                pos, vel, acc = traj(t)
-                ctrl[j].set_desired_trajectory(desired_pos=pos, desired_vel=vel, desired_acc=acc, desired_yaw=0,
-                                              desired_omega=0)
+                ctrl[j].set_desired_trajectory(desired_pos=self.TARGET_POSITIONS[j, :], desired_vel=np.zeros((3,)),
+                                               desired_acc=np.zeros((3,)), desired_yaw=self.TARGET_RPYS[j, :][2],
+                                               desired_omega=0)
+                # pos, vel, acc, yaw, omega = traj(t)
+                # ctrl[j].set_desired_trajectory(desired_pos=pos, desired_vel=vel, desired_acc=acc, desired_yaw=yaw,
+                #                               desired_omega=omega)
                 action[j,:] = ctrl[j].compute(obs[j])
 
                 # logging.info(f"Action:\n {action}")
@@ -313,17 +313,17 @@ class GeometricEnv:
         for i in range(args.num_drones):
             self.TARGET_RPYS[i, 0] = 0
             self.TARGET_RPYS[i, 1] = 0
-            self.TARGET_RPYS[i, 2] = 0
+            self.TARGET_RPYS[i, 2] = np.pi/2.1
 
 
 if __name__ == "__main__":
     ARGS = parse_args()
     geo = GeometricEnv(ARGS, circle_init=True)
+    # env = geo.create_env()
+    # computed_K = geo.FedCE()
+    # exit()
     env = geo.create_env()
-    computed_K = geo.FedCE()
-    exit()
-    env = geo.create_env()
-    geo.args.controller = 'dlqr'
+    # geo.args.controller = 'dlqr'
     geo.do_control()
     # geo.do_control()
     np.save("observations.npy", geo.observations)

@@ -4,16 +4,17 @@ class TrajectoryBase:
     def __call__(self, t):
         '''
         :param t: the time to evaluate the trajectory at
-        :return: the position, velocity, and acceleration at time t
+        :return: the position, velocity, acceleration, and yaw angle at time t
         '''
         raise NotImplementedError
 
 class Lemniscate(TrajectoryBase):
 
-    def __init__(self, a=1, omega=.5, center=np.array([0,0,0])):
+    def __init__(self, a=1, omega=.5, center=np.array([0,0,0]), yaw_rate=0):
         self.a = a
         self.omega = omega
         self.center = center
+        self.yaw_rate = yaw_rate
 
     def __call__(self, t):
         pos = np.zeros(3)
@@ -43,8 +44,9 @@ class Lemniscate(TrajectoryBase):
         acc[0] = 4 * self.a * self.omega ** 2 * sin(2 * th) * (3 * cos(2 * th) + 7) / (cos(2 * th) - 3) ** 3
         acc[1] = self.a * self.omega ** 2 * cos(th) * (44 * cos(2 * th) + cos(4 * th) - 21) / (cos(2 * th) - 3) ** 3
         acc[2] = 0
-
-        return pos, vel, acc
+        yaw = np.pi * sin(self.yaw_rate * t) #yaw rate smoothly changes from -pi to pi based on yaw rate
+        omega = np.pi * self.yaw_rate * cos(self.yaw_rate*t)
+        return pos, vel, acc, yaw, omega
 
 
 

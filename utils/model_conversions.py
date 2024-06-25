@@ -21,13 +21,25 @@ def rpy_to_rot(rpy):
 def obs_to_lin_model(obs):
     x = np.zeros((12,))
 
-    cur_pos = to_ned @ obs[0:3]
+
+    # cur_pos = to_ned @ obs[0:3]
+    # cur_quat = obs[3:7]
+    # cur_euler_body = obs[7:10]
+    # cur_euler = to_ned @ cur_euler_body # essientially just multiply the y and z by a negative 1
+    #
+    # cur_vel = to_ned @ obs[10:13] #this should be world velocity, but probably need to convert to NED frame
+    # cur_ang_vel = to_ned @ obs[13:16] #this should be body angular velocity, unsure what needs to change here
+
+
+
+    cur_pos = obs[0:3]
     cur_quat = obs[3:7]
     cur_euler_body = obs[7:10]
-    cur_euler = to_ned @ cur_euler_body # essientially just multiply the y and z by a negative 1
+    cur_euler = cur_euler_body # essientially just multiply the y and z by a negative 1
 
-    cur_vel = to_ned @ obs[10:13] #this should be world velocity, but probably need to convert to NED frame
-    cur_ang_vel = to_ned @ obs[13:16] #this should be body angular velocity, unsure what needs to change here
+    cur_vel = obs[10:13] #this should be world velocity, but probably need to convert to NED frame
+    cur_ang_vel = obs[13:16] #this should be body angular velocity, unsure what needs to change here
+
 
     x[:3] = cur_euler
     x[3:6] = cur_ang_vel
@@ -97,8 +109,12 @@ def geo_model_to_obs(x):
 def geo_x_dot_to_linear(geo_xdot):
     x_dot = np.zeros((12,))
 
-    x_dot[:3] = to_ned @ geo_xdot[3:6]
-    x_dot[3:6] = to_ned @ geo_xdot[9:12]
-    x_dot[6:9] = to_ned @ geo_xdot[6:9]
-    x_dot[9:] = to_ned @ geo_xdot[:3]
+    # x_dot[:3] = to_ned @ geo_xdot[3:6]
+    # x_dot[3:6] = to_ned @ geo_xdot[9:12]
+    # x_dot[6:9] = to_ned @ geo_xdot[6:9]
+    # x_dot[9:] = to_ned @ geo_xdot[:3]
+    x_dot[:3] = geo_xdot[3:6]
+    x_dot[3:6] = geo_xdot[9:12]
+    x_dot[6:9] = geo_xdot[6:9]
+    x_dot[9:] = geo_xdot[:3]
     return x_dot
