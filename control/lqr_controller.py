@@ -71,11 +71,20 @@ class LQRController(BaseController):
         e = np.copy(x)
         e[9:] = x[9:] - self.desired_pos
         e[6:9] = (x[6:9] - self.desired_vel)
+        #our linear model assumes that the yaw error is small, say less than pi/4 so cap the error
+
+        angle_diff = (e[2] - self.desired_yaw + np.pi) % (2 * np.pi) - np.pi
+        # rotate R back by the yaw of e[2] then back to the max of angle_diff and 45
+        feasible_des_yaw = self.desired_yaw
+        if abs(angle_diff) > np.pi / 8:
+            feasible_des_yaw = e[2] + np.sign(angle_diff) * (np.pi / 8)
         #need to take rpy -> to rot mat -> rotate by desired yaw.T -> back to rpy
-        R = Rotation.from_euler('xyz', e[0:3]).as_matrix()
-        Rdes = Rotation.from_euler('xyz', [0, 0, self.desired_yaw]).as_matrix()
+        R = Rotation.from_euler('xyz', e[:3]).as_matrix()
+        # Rcentered = Rotation.from_euler('xyz', [0, 0, -e[2]]).as_matrix()
+        Rdes = Rotation.from_euler('xyz', [0, 0, feasible_des_yaw]).as_matrix()
         R = Rdes.T @ R
         e[0:3] = Rotation.from_matrix(R).as_euler('xyz')
+        print(f"e[2]: {e[2]}, desired_yaw: {self.desired_yaw}, feasible_des_yaw: {feasible_des_yaw}")
         # e[2] = x[2] - self.desired_yaw #consider 1-cos(x2-yaw_des)
         # e[2] = np.arctan2(np.sin(e[2]), np.cos(e[2]))
 

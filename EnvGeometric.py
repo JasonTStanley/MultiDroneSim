@@ -245,12 +245,12 @@ class GeometricEnv:
         t = 0
         for i in range(CTRL_STEPS):
             for j in range(args.num_drones):
-                ctrl[j].set_desired_trajectory(desired_pos=self.TARGET_POSITIONS[j, :], desired_vel=np.zeros((3,)),
-                                               desired_acc=np.zeros((3,)), desired_yaw=self.TARGET_RPYS[j, :][2],
-                                               desired_omega=0)
-                # pos, vel, acc, yaw, omega = traj(t)
-                # ctrl[j].set_desired_trajectory(desired_pos=pos, desired_vel=vel, desired_acc=acc, desired_yaw=yaw,
-                #                               desired_omega=omega)
+                # ctrl[j].set_desired_trajectory(desired_pos=self.TARGET_POSITIONS[j, :], desired_vel=np.zeros((3,)),
+                #                                desired_acc=np.zeros((3,)), desired_yaw=self.TARGET_RPYS[j, :][2],
+                #                                desired_omega=0)
+                pos, vel, acc, yaw, omega = traj(t)
+                ctrl[j].set_desired_trajectory(desired_pos=pos, desired_vel=vel, desired_acc=acc, desired_yaw=yaw,
+                                              desired_omega=omega)
                 action[j,:] = ctrl[j].compute(obs[j])
 
                 # logging.info(f"Action:\n {action}")
@@ -313,7 +313,7 @@ class GeometricEnv:
         for i in range(args.num_drones):
             self.TARGET_RPYS[i, 0] = 0
             self.TARGET_RPYS[i, 1] = 0
-            self.TARGET_RPYS[i, 2] = np.pi/2.1
+            self.TARGET_RPYS[i, 2] = 0
 
 
 if __name__ == "__main__":
