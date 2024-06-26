@@ -1,7 +1,6 @@
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-to_ned = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
 def rpy_to_rot(rpy):
     #using conventino zyx from pg 12 of Franceso Sabatino Thesis
     roll = rpy[0]
@@ -35,10 +34,10 @@ def obs_to_lin_model(obs):
     cur_pos = obs[0:3]
     cur_quat = obs[3:7]
     cur_euler_body = obs[7:10]
-    cur_euler = cur_euler_body # essientially just multiply the y and z by a negative 1
+    cur_euler = cur_euler_body
 
-    cur_vel = obs[10:13] #this should be world velocity, but probably need to convert to NED frame
-    cur_ang_vel = obs[13:16] #this should be body angular velocity, unsure what needs to change here
+    cur_vel = obs[10:13] #this should be world velocity
+    cur_ang_vel = obs[13:16] #this should be body angular velocity
 
 
     x[:3] = cur_euler
