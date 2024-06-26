@@ -24,7 +24,7 @@ DEFAULT_RECORD = False
 DEFAULT_USER_DEBUG_GUI = False
 DEFAULT_SIMULATION_FREQ_HZ = 100
 DEFAULT_CONTROL_FREQ_HZ = 100
-DEFAULT_DURATION_SEC = 50
+DEFAULT_DURATION_SEC = 100
 DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_NUM_DRONES = 1 #2
 controllers = ['lqr', 'geometric'] #whichever is first will be default
@@ -111,17 +111,6 @@ class GeometricEnv:
         DRONE_IDS = env.getDroneIds()
         env._showDroneLocalAxes(0)
 
-        # ctrl = []
-        #
-        # if args.drone in [DroneModel.CF2X, DroneModel.CF2P]:
-        #     for i in range(args.num_drones):
-        #         if args.controller == "geometric":
-        #             geo_ctrl = GeometricControl(env)
-        #             ctrl.append(geo_ctrl)
-        #         if args.controller == 'lqr':
-        #             lqr_ctrl = LQRController(env, self.linear_model)
-        #             ctrl.append(lqr_ctrl)
-
         # Conversion matrix between motor speeds and thrust and torques.
         r = env.KM / env.KF
         # convert between motor_thrusts and thrust/torques for a PLUS frame drone (CF2P) (is the Crazyflie 2.1 with plus config)
@@ -143,19 +132,18 @@ class GeometricEnv:
 
         for i in range(TW):
             phis = []
-            x_tp1s = []
+            e_tp1s = []
             action = np.zeros((args.num_drones, 4))
 
-            pos, vel, acc = traj(t)
-            x_des = np.hstack([[0, 0, 0], np.zeros((3,)), vel, pos])
+            pos, vel, acc, yaw, omega = traj(t)
+            x_des = np.hstack([[0, 0, 0], [0,0,0], vel, pos])
             for j in range(args.num_drones):
                 x = obs_to_lin_model(obs[j])
                 # u = dLQR.sigma1()
                 #act = conversions.input_to_action(env, u)
                 e = dLQR.error_state(x, x_des)
-                act = dLQR.LQR(obs[j], pos=pos, vel=vel)
+                act,u = dLQR.LQR(obs[j], pos=pos, vel=vel, yaw=0, omega=0)
 
-                u = conversions.action_to_input(env, act)
                 #since we have a setpoint, we must calculate the error state to learn theta
                 action[j, :] = act
                 phis.append(np.hstack([e, u])) #use error state as input state to update phi
@@ -174,10 +162,10 @@ class GeometricEnv:
 
                 x_tp1 = obs_to_lin_model(obs[j])
                 e_tp1 = dLQR.error_state(x_tp1, x_des)
-                x_tp1s.append(x_tp1)
+                e_tp1s.append(e_tp1)
 
             # update the theta and V values
-            dLQR.theta_update(phis, x_tp1s)
+            dLQR.theta_update(phis, e_tp1s)
 
             env.render()
             sync(i, START, env.CTRL_TIMESTEP)
@@ -204,7 +192,7 @@ class GeometricEnv:
         dLQR.compute_controller()
         return dLQR.K
 
-    def do_control(self):
+    def do_control(self, do_lemniscate=False):
         env = self.env
         args = self.args
         # for information about collecting a dataset using similar code, see https://github.com/altwaitan/DL4IO/blob/main/examples/pybullet/data_collection.py
@@ -215,7 +203,7 @@ class GeometricEnv:
 
         # PID control for set point regulation
         ctrl = []
-        traj = Lemniscate(center=np.array([0, 0, .5]), omega=.25)
+        traj = Lemniscate(center=np.array([0, 0, .5]), omega=.25, yaw_rate=2)
         if args.drone in [DroneModel.CF2X, DroneModel.CF2P]:
             for i in range(args.num_drones):
                 if args.controller == "geometric":
@@ -245,13 +233,17 @@ class GeometricEnv:
         t = 0
         for i in range(CTRL_STEPS):
             for j in range(args.num_drones):
-                # ctrl[j].set_desired_trajectory(desired_pos=self.TARGET_POSITIONS[j, :], desired_vel=np.zeros((3,)),
-                #                                desired_acc=np.zeros((3,)), desired_yaw=self.TARGET_RPYS[j, :][2],
-                #                                desired_omega=0)
-                pos, vel, acc = traj(t)
-                ctrl[j].set_desired_trajectory(desired_pos=pos, desired_vel=vel, desired_acc=acc, desired_yaw=0,
-                                              desired_omega=0)
-                action[j,:] = ctrl[j].compute(obs[j])
+                if do_lemniscate:
+                    pos, vel, acc, yaw, omega = traj(t)
+                    ctrl[j].set_desired_trajectory(desired_pos=pos, desired_vel=vel, desired_acc=acc, desired_yaw=yaw,
+                                                   desired_omega=omega)
+                else:
+                    ctrl[j].set_desired_trajectory(desired_pos=self.TARGET_POSITIONS[j, :], desired_vel=np.zeros((3,)),
+                                                   desired_acc=np.zeros((3,)), desired_yaw=self.TARGET_RPYS[j, :][2],
+                                                   desired_omega=0)
+
+
+                action[j,:], u = ctrl[j].compute(obs[j])
 
                 # logging.info(f"Action:\n {action}")
                 # logging.info(f"Obs:\n {obs[0]}")
@@ -305,7 +297,7 @@ class GeometricEnv:
         # initialize the target positions and orientations to just be a vertical offset of starting positions
 
         for i in range(args.num_drones):
-            self.INIT_RPYS[i,2] = 0
+            self.INIT_RPYS[i,2] = np.pi / 2
             self.TARGET_POSITIONS[i, 0] = self.INIT_XYZS[i, 0]
             self.TARGET_POSITIONS[i, 1] = self.INIT_XYZS[i, 1]
             self.TARGET_POSITIONS[i, 2] = self.INIT_XYZS[i, 2] + self.starting_target_offset
@@ -313,7 +305,7 @@ class GeometricEnv:
         for i in range(args.num_drones):
             self.TARGET_RPYS[i, 0] = 0
             self.TARGET_RPYS[i, 1] = 0
-            self.TARGET_RPYS[i, 2] = 0
+            self.TARGET_RPYS[i, 2] = np.pi / 2
 
 
 if __name__ == "__main__":
@@ -321,9 +313,8 @@ if __name__ == "__main__":
     geo = GeometricEnv(ARGS, circle_init=True)
     env = geo.create_env()
     computed_K = geo.FedCE()
-    exit()
-    env = geo.create_env()
+    # exit()
     geo.args.controller = 'dlqr'
-    geo.do_control()
-    # geo.do_control()
-    np.save("observations.npy", geo.observations)
+    env = geo.create_env()
+    geo.do_control(do_lemniscate=True)
+    np.save("_observations.npy", geo.observations)

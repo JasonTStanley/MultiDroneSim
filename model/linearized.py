@@ -53,8 +53,11 @@ class LinearizedModel:
 
         self.A[0:3, 3:6] = np.eye(3)
         self.A[9:, 6:9] = np.eye(3)
-        self.A[6, 1] = -self.g
-        self.A[7, 0] = self.g
+        # self.A[6, 1] = -self.g
+        # self.A[7, 0] = self.g
+
+        self.A[6, 1] = self.g
+        self.A[7, 0] = -self.g
 
         self.B[8, 0] = 1.0 / self.mass
         self.B[3:6, 1:] = np.array([[1 / self.Ixx, 0, 0], [0, 1 / self.Iyy, 0], [0, 0, 1 / self.Izz]])
@@ -65,8 +68,8 @@ class LinearizedModel:
 
         #initialize Ahat and Bhat to be a slight permutation of A and B
         self.Ahat = self.A.copy()
-        self.Ahat[6, 1] = -self.g*0.9
-        self.Ahat[7, 0] = self.g*0.9
+        self.Ahat[6, 1] = self.g*0.9
+        self.Ahat[7, 0] = -self.g*0.9
 
         self.Bhat = self.B.copy()
         self.Bhat[3:6, 1:] = np.array([[1 / self.Ixx, 0, 0], [0, 1 / self.Iyy, 0], [0, 0, 1 / self.Izz]]) * 1.1
@@ -85,13 +88,15 @@ class LinearizedModel:
 
     def calc_xdot(self, x, action):
         u = conversions.action_to_input(self.env, action)
-        to_ned = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
-        u[1:] = to_ned @ u[1:]
-        u[0] = -u[0]
-        u_eq = np.array([-self.mass * self.g, 0, 0, 0])
+        #TODO change to standard frame instead of NED convention
+        # to_ned = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
+        # u[1:] = to_ned @ u[1:]
+        # u[0] = -u[0]
+        # u_eq = np.array([-self.mass * self.g, 0, 0, 0])
+        u_eq = np.array([self.mass * self.g, 0, 0, 0])
         x_eq = np.zeros((12,))
         x_eq[-3:] = x[-3:]
-        x_dot = self.A @ (x-x_eq) + self.B @ (u - u_eq)
+        x_dot = self.A @ (x - x_eq) + self.B @ (u - u_eq)
 
         return x_dot
 

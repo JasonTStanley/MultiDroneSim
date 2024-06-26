@@ -57,6 +57,7 @@ class DecentralizedLQR(BaseController):
         self.desired_pos = np.zeros((3,))
         self.desired_vel = np.zeros((3,))
         self.desired_yaw = 0
+        self.desired_omega = 0
 
 
     def get_thetai(self, i):
@@ -86,7 +87,7 @@ class DecentralizedLQR(BaseController):
         thrust = np.random.uniform(.7*self.env.M*self.env.G, 1.5 * self.env.M * self.env.G)
         torques = np.random.uniform(-0.00001, 0.00001, 3)
         return np.hstack([thrust, torques])
-    def LQR(self, obs, pos=np.array([0,0,0]), yaw=0, vel=np.array([0,0,0]), omega=np.array([0,0,0])):
+    def LQR(self, obs, pos=np.array([0,0,0]), yaw=0, vel=np.array([0,0,0]), omega=0):
         self.lqr_controller.set_desired_trajectory(desired_pos=pos, desired_vel=vel, desired_acc=[0,0,0], desired_yaw=yaw, desired_omega=omega)
         action = self.lqr_controller.compute(obs)
         return action
@@ -97,14 +98,14 @@ class DecentralizedLQR(BaseController):
             x = xs[i*12:(i+1)*12]
             x_des = xs_des[i*12:(i+1)*12]
             e = np.copy(x)
-            e[9:] = x[9:] - x_des[9:]
-            e[6:9] = x[6:9] - x_des[6:9]
-            # need to take rpy -> to rot mat -> rotate by desired yaw.T -> back to rpy
-            R = Rotation.from_euler('xyz', e[0:3]).as_matrix()
-            #ignore the desired pitch and roll because we don't have full freedom over them.
-            Rdes = Rotation.from_euler('xyz', [0, 0, x_des[2]]).as_matrix()
-            R = Rdes.T @ R
-            e[0:3] = Rotation.from_matrix(R).as_euler('xyz')
+
+            R_eq = Rotation.from_euler('xyz', [0, 0, x_des[2]]).as_matrix()
+            R = Rotation.from_euler('xyz', x[:3]).as_matrix()
+            R_err = R_eq.T @ R
+            e[:3] = Rotation.from_matrix(R_err).as_euler('xyz')
+            e[9:] = R_eq.T @ (x[9:] - x_des[9:])
+            e[6:9] = R_eq.T @ (x[6:9] - x_des[6:9])
+            e[3:6] = R_eq.T @ (x[3:6] - x_des[3:6])
             es[i*12:(i+1)*12] = e
         return es
 
@@ -119,25 +120,31 @@ class DecentralizedLQR(BaseController):
 
     def set_desired_trajectory(self, desired_pos, desired_vel, desired_acc, desired_yaw, desired_omega):
         # offset pos by desired_pos for now
-        self.desired_pos = utils.to_ned @ desired_pos
-        self.desired_vel = utils.to_ned @ desired_vel
-        self.desired_yaw = -desired_yaw
+        self.desired_pos = desired_pos
+        self.desired_vel = desired_vel
+        self.desired_yaw = desired_yaw
+        self.desired_omega = desired_omega
 
     def compute(self, obs):
         x = obs_to_lin_model(obs)
         e = np.copy(x)
-        e[9:] = x[9:] - self.desired_pos
-        e[6:9] = (x[6:9] - self.desired_vel)
 
-        # need to take rpy -> to rot mat -> rotate by desired yaw.T -> back to rpy
-        R = Rotation.from_euler('xyz', e[0:3]).as_matrix()
-        Rdes = Rotation.from_euler('xyz', [0, 0, self.desired_yaw]).as_matrix()
-        R = Rdes.T @ R
-        e[0:3] = Rotation.from_matrix(R).as_euler('xyz')
+        # equilibrium is at the desired yaw
+        R_eq = Rotation.from_euler('xyz', [0, 0, self.desired_yaw]).as_matrix()
+        R = Rotation.from_euler('xyz', x[:3]).as_matrix()
+        R_err = R_eq.T @ R  # rotate R by the desired yaw this is the error in rotation from the equilibrium
+
+        e[:3] = Rotation.from_matrix(R_err).as_euler('xyz')
+
+        # since observation and desired values are in the world frame we must rotate them
+        # by the desired angle (goal frame) to compute the error between body and goal
+        e[9:] = R_eq.T @ (x[9:] - self.desired_pos)
+        e[6:9] = R_eq.T @ (x[6:9] - self.desired_vel)
+        e[3:6] = R_eq.T @ (x[3:6] - np.array([0, 0, self.desired_omega]))
+
         u = -self.K @ e
-        u[0] = -1 * u[0]  # put into body frame
-        u[1:] = utils.to_ned @ u[1:]
         action = input_to_action(self.env, u)
-        return action
+        return action, u
+
     def cost(self, x, u):
         return x.T @ self.Q @ x + u.T @ self.R @ u
