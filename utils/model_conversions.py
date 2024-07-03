@@ -55,8 +55,10 @@ def obs_to_lin_model(obs):
 #     obs[10:13] = x[15:]
 #     return obs
 
-def action_to_input(env, action):
+def action_to_input(env, action, cap_rpm=True):
     r = env.KM / env.KF
+    if cap_rpm:
+        action = np.clip(action, 0, env.MAX_RPM) # just clip with max_rpm as it's what happens in the simulator
     # convert between motor_thrusts and thrust/torques for a PLUS frame drone (CF2P) (is the Crazyflie 2.1 with plus config)
     conversion_mat = np.array([[1.0, 1.0, 1.0, 1.0],
                                [0.0, env.L, 0.0, -env.L],
@@ -65,6 +67,7 @@ def action_to_input(env, action):
 
     rpms = np.array(action)
     motor_thrusts = env.KF * rpms ** 2
+
     u = conversion_mat @ motor_thrusts
     return u
 
