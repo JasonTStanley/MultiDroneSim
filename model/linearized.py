@@ -60,7 +60,7 @@ class LinearizedModel:
         self.A[7, 0] = -self.g
 
         self.B[8, 0] = 1.0 / self.mass
-        self.B[3:6, 1:] = np.array([[1 / self.Ixx, 0, 0], [0, 1 / self.Iyy, 0], [0, 0, 1 / self.Izz]])
+        self.B[3:6, 1:] = np.diag([1 / self.Ixx, 1 / self.Iyy, 1 / self.Izz])
 
         self.D[:, 2:] = self.B.copy()
         self.D[7, 1] = 1.0 / self.mass

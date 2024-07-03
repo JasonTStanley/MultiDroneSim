@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.integrate
 
 import scipy.linalg as la
 from control.base_controller import BaseController
@@ -14,7 +15,7 @@ class DecentralizedLQR(BaseController):
         super().__init__(env)
 
         # Brysons rule, essentially set Rii to be 1/(u^2_i) where u_i is the max input for the ith value)
-        max_thrust = 4 * env.M * env.G
+        max_thrust = env.MAX_THRUST
         max_torque_pitch_roll = 0.001
         max_torque_yaw = 0.001
         rflat = [1 / (max_thrust ** 2), 1 / (max_torque_pitch_roll ** 2), 1 / (max_torque_pitch_roll ** 2),
@@ -58,16 +59,34 @@ class DecentralizedLQR(BaseController):
         self.desired_vel = np.zeros((3,))
         self.desired_yaw = 0
         self.desired_omega = 0
+        A_keep_1 = np.index_exp[(6, 7), (1, 0)]  # refers to (6,1) and (7,0) the g values in the A matrix
+        # A_keep_2 = np.index_exp[0:3, 3:6]
+        A_keep_2 = np.index_exp[(0,1,2), (3,4,5)]
+        # A_keep_3 = np.index_exp[9:, 6:9]
+        A_keep_3 = np.index_exp[(9,10,11), (6,7,8)]
+        B_keep_1 = np.index_exp[3:6, 1:]
+        B_keep_2 = np.index_exp[8, 0]
+        self.A_mask = np.zeros((12 * self.num_robots, 12 * self.num_robots))
+        self.B_mask = np.zeros((12 * self.num_robots, 4 * self.num_robots))
+        for i in range(self.num_robots):
+            self.A_mask[12 * i:12 * (i + 1), 12 * i:12 * (i + 1)][A_keep_1] = 1
+            self.A_mask[12 * i:12 * (i + 1), 12 * i:12 * (i + 1)][A_keep_2] = 1
+            self.A_mask[12 * i:12 * (i + 1), 12 * i:12 * (i + 1)][A_keep_3] = 1
+            self.B_mask[12 * i:12 * (i + 1), 4 * i:4 * (i + 1)][B_keep_1] = 1
+            self.B_mask[12 * i:12 * (i + 1), 4 * i:4 * (i + 1)][B_keep_2] = 1
 
 
     def get_thetai(self, i):
         return self.theta[i * 16:(i + 1) * 16, 12 * i:(i + 1) * 12]
 
-    def do_sim_step(self, u):
-        # apply the control input to the environment
-        obs = self.env.step(u)
-        x_tp1 = obs_to_lin_model(obs)
-        return x_tp1
+    def forward_predict(self, e, u):
+        Ahat = self.get_thetai(0)[:12, :].T
+        Bhat = self.get_thetai(0)[12:, :].T
+        def f(t, e):
+            return Ahat @ e + Bhat @ u
+        y0 = e
+        sol = scipy.integrate.solve_ivp(f, [0, self.env.CTRL_TIMESTEP], y0)
+        return sol.y[:, -1]
 
     def theta_update(self, phis, xtp1s):
         # update the appropriate theta
@@ -76,10 +95,14 @@ class DecentralizedLQR(BaseController):
             phi = phis[i].reshape((16, 1))
             V = self.V[16 * i:16 * (i + 1), 16 * i:16 * (i + 1)]
             th_i = self.get_thetai(i)
-            theta_new = th_i + np.linalg.inv(V) @ phi @ (x_tp1.T - phi.T @ th_i)
+            theta_new = th_i + np.linalg.pinv(V) @ phi @ (x_tp1.T - phi.T @ th_i)
             V_new = V + phi @ phi.T
             self.theta[i * 16:(i + 1) * 16, i * 12:(i + 1) * 12] = theta_new
             self.V[16 * i:16 * (i + 1), 16 * i:16 * (i + 1)] = V_new
+
+        #project back to known zeros
+        self.project_theta()
+
 
     def sigma1(self):
         # draw a random input force and thrust, ensure that the input is within the bounds
@@ -87,6 +110,28 @@ class DecentralizedLQR(BaseController):
         thrust = np.random.uniform(.7*self.env.M*self.env.G, 1.5 * self.env.M * self.env.G)
         torques = np.random.uniform(-0.00001, 0.00001, 3)
         return np.hstack([thrust, torques])
+
+    def sigma_explore(self):
+        #do gausian noise around hover with some small covariance for the input
+        thrust_cov = .25 * self.env.M * self.env.G
+        torque_xy_cov = 0.01 * self.env.MAX_XY_TORQUE
+        torque_z_cov = 0.01 * self.env.MAX_Z_TORQUE
+        thrust = np.random.normal(self.env.M * self.env.G, thrust_cov)
+        torques = np.random.normal(0, [torque_xy_cov, torque_xy_cov, torque_z_cov])
+        #may need to bound system. ie if we have moved too far in one direction, only allow exploration in the other direction
+        return np.hstack([thrust, torques])
+
+    def noisy_control(self, obs):
+        action , u = self.compute(obs)
+        thrust = np.random.uniform(.01 * self.env.M * self.env.G, 0.01 * self.env.M * self.env.G) # add noise to the thrust
+        torques = np.random.uniform(-0.000001, 0.000001, 3) # add noise to the torques
+        ctrl_noise = np.hstack([thrust, torques])
+
+        u_noisy = u + ctrl_noise
+        action_noisy = input_to_action(self.env, u_noisy)
+        return action_noisy, u_noisy
+
+
     def LQR(self, obs, pos=np.array([0,0,0]), yaw=0, vel=np.array([0,0,0]), omega=0):
         self.lqr_controller.set_desired_trajectory(desired_pos=pos, desired_vel=vel, desired_acc=[0,0,0], desired_yaw=yaw, desired_omega=omega)
         action = self.lqr_controller.compute(obs)
@@ -125,6 +170,17 @@ class DecentralizedLQR(BaseController):
         self.desired_yaw = desired_yaw
         self.desired_omega = desired_omega
 
+    def project_theta(self):
+        #set the known zeros to zero
+
+        Ahat = self.theta[:-4, :].T
+        Bhat = self.theta[-4:, :].T
+        Ahat = Ahat * self.A_mask
+        Bhat = Bhat * self.B_mask
+        Ahat[0:3, 3:6] = np.eye(3)
+        Ahat[9:, 6:9] = np.eye(3)
+        self.theta = np.hstack([Ahat, Bhat]).T
+
     def compute(self, obs):
         x = obs_to_lin_model(obs)
         e = np.copy(x)
@@ -143,6 +199,8 @@ class DecentralizedLQR(BaseController):
         e[3:6] = R_eq.T @ (x[3:6] - np.array([0, 0, self.desired_omega]))
 
         u = -self.K @ e
+        #offset by the equilibrium thrust
+        u[0] += self.env.M * self.env.G
         action = input_to_action(self.env, u)
         return action, u
 

@@ -15,7 +15,10 @@ class LQRController(BaseController):
         # R = .1
 
         # Brysons rule, essentially set Rii to be 1/(u^2_i) where u_i is the max input for the ith value)
-        max_thrust = 4 * env.M * env.G
+        max_thrust = env.MAX_THRUST
+        # test why these are currently not working
+        # max_torque_pitch_roll = env.MAX_XY_TORQUE
+        # max_torque_yaw = env.MAX_Z_TORQUE
         max_torque_pitch_roll = 0.001
         max_torque_yaw = 0.001
         rflat = [1 / (max_thrust ** 2), 1 / (max_torque_pitch_roll ** 2), 1 / (max_torque_pitch_roll ** 2), 1 / (max_torque_yaw ** 2)]
@@ -103,5 +106,6 @@ class LQRController(BaseController):
         #
 
         u = -self.K @ e
+        u[0] += u[0] + self.env.M * self.env.G # offset by the equilibirum force
         action = input_to_action(self.env, u)
         return action, u
