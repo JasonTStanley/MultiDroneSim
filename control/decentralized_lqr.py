@@ -53,6 +53,7 @@ class DecentralizedLQR(BaseController):
 
         self.theta = np.hstack([self.Astar, self.Bstar]).T
         self.V = np.eye(16 * self.num_robots)
+        self.P = np.eye(16 * self.num_robots)
         self.lqr_controller = lqr_controller.LQRController(env, lin_models[0])
         self.K = None
         self.desired_pos = np.zeros((3,))
@@ -91,11 +92,13 @@ class DecentralizedLQR(BaseController):
     def theta_update(self, phis, xtp1s):
         # update the appropriate theta
         for i in range(self.num_robots):
+            #we need to estimate x_dot from observations of x_tp1 so we regress to the continuous model
             x_tp1 = xtp1s[i].reshape((12, 1))
             phi = phis[i].reshape((16, 1))
+            x_dot = (x_tp1 - phi[:12]) / self.env.CTRL_TIMESTEP #estimate x_dot
             V = self.V[16 * i:16 * (i + 1), 16 * i:16 * (i + 1)]
             th_i = self.get_thetai(i)
-            theta_new = th_i + np.linalg.pinv(V) @ phi @ (x_tp1.T - phi.T @ th_i)
+            theta_new = th_i + np.linalg.pinv(V) @ phi @ (x_dot.T - phi.T @ th_i)
             V_new = V + phi @ phi.T
             self.theta[i * 16:(i + 1) * 16, i * 12:(i + 1) * 12] = theta_new
             self.V[16 * i:16 * (i + 1), 16 * i:16 * (i + 1)] = V_new
@@ -103,6 +106,45 @@ class DecentralizedLQR(BaseController):
         #project back to known zeros
         self.project_theta()
 
+    def est_x_dot(self, x_tp1, phi):
+        phi = phi.reshape((16,))
+        x_tp1 = x_tp1.reshape((12,))
+        x_dot = np.zeros((12,)) # estimate x_dot using what we know about the system
+        x_dot[0:3] = (phi[3:6] + x_tp1[3:6]) / 2.0 # avg of the two ang vels
+        x_dot[3:6] = (x_tp1[3:6] - phi[3:6]) / self.env.CTRL_TIMESTEP # estimate the angular acceleration
+
+        x_dot[6:9] = (x_tp1[6:9] - phi[6:9]) / self.env.CTRL_TIMESTEP # estimate the linear acceleration
+        x_dot[9:] = (phi[6:9] + x_tp1[6:9]) / 2.0 # avg of the two linear vels
+
+        return x_dot
+    def new_theta_update(self, phis, xtp1s):
+        A_gs = np.index_exp[(6, 7), (1, 0)]
+        Ahat = self.theta[:-4, :].T
+        Bhat = self.theta[-4:, :].T
+        ag_before = Ahat[A_gs]
+        ag_expected = np.array([9.81, -9.81])
+
+        for i in range(self.num_robots):
+            # we need to estimate x_dot from observations of x_tp1 so we regress to the continuous model
+            x_tp1 = xtp1s[i].reshape((12, 1))
+            phi = phis[i].reshape((16, 1))
+            x_dot = self.est_x_dot(x_tp1, phi)  # estimate x_dot
+
+            P = self.P[16 * i:16 * (i + 1), 16 * i:16 * (i + 1)]
+            L = self.P @ phi @ np.linalg.inv(1 + phi.T @ P @ phi)
+            # print("L norm: " + str(np.linalg.norm(L)))
+            th_i = self.get_thetai(i)
+            theta_new = th_i + L @ (x_dot.T - phi.T @ th_i)
+            self.theta[i * 16:(i + 1) * 16, i * 12:(i + 1) * 12] = theta_new
+            self.P[16 * i:16 * (i + 1), 16 * i:16 * (i + 1)] = (np.eye(16) - L @ phi.T) @ P # update P
+
+        self.project_theta()
+        ag_after = self.theta[:-4, :].T[A_gs]
+        if np.linalg.norm(ag_after - ag_expected) > np.linalg.norm(ag_before - ag_expected) + .01:
+            print("A_g not updated correctly")
+            print("A_g before: " + str(ag_before))
+            print("A_g after: " + str(ag_after))
+            print("A_g expected: " + str(ag_expected))
 
     def sigma1(self):
         # draw a random input force and thrust, ensure that the input is within the bounds
@@ -113,9 +155,9 @@ class DecentralizedLQR(BaseController):
 
     def sigma_explore(self):
         #do gausian noise around hover with some small covariance for the input
-        thrust_cov = .25 * self.env.M * self.env.G
-        torque_xy_cov = 0.01 * self.env.MAX_XY_TORQUE
-        torque_z_cov = 0.01 * self.env.MAX_Z_TORQUE
+        thrust_cov = .15 * self.env.M * self.env.G
+        torque_xy_cov = 0.005 * self.env.MAX_XY_TORQUE
+        torque_z_cov = 0.005 * self.env.MAX_Z_TORQUE
         thrust = np.random.normal(self.env.M * self.env.G, thrust_cov)
         torques = np.random.normal(0, [torque_xy_cov, torque_xy_cov, torque_z_cov])
         #may need to bound system. ie if we have moved too far in one direction, only allow exploration in the other direction
@@ -180,6 +222,7 @@ class DecentralizedLQR(BaseController):
         Ahat[0:3, 3:6] = np.eye(3)
         Ahat[9:, 6:9] = np.eye(3)
         self.theta = np.hstack([Ahat, Bhat]).T
+
 
     def compute(self, obs):
         x = obs_to_lin_model(obs)

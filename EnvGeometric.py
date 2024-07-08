@@ -115,22 +115,32 @@ class GeometricEnv:
             steps = self.fedCE_iteration(env, dLQR, START, steps, n, do_warmup=(n==0), random_warmup=True)
             thetaA = dLQR.theta[:12, :].T
             thetaB = dLQR.theta[12:, :].T
-            if n % 10 == 0:
-                print("Iteration: ", n)
-
-            with np.printoptions(precision=3, suppress=True):
+            with np.printoptions(precision=3, suppress=True, linewidth=100000):
+                print(f"n: {n}, steps: {steps}")
                 print("Theta A:\n ", thetaA)
-                print("Theta B:\n ", thetaB)
-                print("True A:\n ", self.linear_model.A)
-                print("True B:\n ", self.linear_model.B)
+                # print("Theta B:\n ", thetaB)
+                # print("True A:\n ", self.linear_model.A)
+                # print("True B:\n ", self.linear_model.B)
+
+            r, p, y = Rotation.from_quat(env.quat.flatten()).as_euler('xyz')
+            if np.abs(r) > np.pi / 2 or np.abs(p) > np.pi / 2:
+                print("Crashed")
+                break
+
+
+
+
+                #print key values of A, B
+                # print(f"Theta A: (g, -g): ({thetaA[6,1]},{thetaA[7,0]}) ")
+                # print(f"Theta B: 1/m: {thetaB[8,0]} 1/J:\n {thetaB[3:6, 1:]}")
         env.close()
 
-    def fedCE_iteration(self, env, dLQR, START, steps, n, k=1, do_warmup=True, random_warmup=True, do_lemniscate=False):
+    def fedCE_iteration(self, env, dLQR, START, steps, n, k=2, do_warmup=True, random_warmup=True, do_lemniscate=False, do_print=False):
         Texp = n * k
-        Tce = n * (k ** 3)
+        Tce = n * (k**3)
         Tw = 0
         if do_warmup:
-            Tw = 50 # some small warmup
+            Tw = 100 # some small warmup
 
         args = self.args
         action = np.zeros((args.num_drones, 4))
@@ -186,16 +196,24 @@ class GeometricEnv:
 
             # update the theta and V values
             if i != 0: #skip first because the control input was not applied
-                dLQR.theta_update(phis, e_tp1s)
+                # dLQR.theta_update(phis, e_tp1s)
+                dLQR.new_theta_update(phis, e_tp1s)
 
-            env.render()
+            if do_print:
+                env.render()
             sync(steps, START, env.CTRL_TIMESTEP)
             steps += 1
 
         t = 0
         #CE phase
+        last_desired = np.zeros((args.num_drones, 12))
         dLQR.compute_controller()
         for i in range(Tce):
+            # ensure we aren't crashing
+            r, p, y = Rotation.from_quat(env.quat.flatten()).as_euler('xyz')
+            if np.abs(r) > np.pi / 2 or np.abs(p) > np.pi / 2:
+                print("Crashing in CE")
+                return steps
             #compute controller from current observations and use it to achieve some task
             action = np.zeros((args.num_drones, 4))
             for j in range(args.num_drones):
@@ -210,12 +228,15 @@ class GeometricEnv:
                                                    desired_acc=np.zeros((3,)),
                                                    desired_yaw=self.TARGET_RPYS[j, :][2],
                                                    desired_omega=0)
+                    last_desired[j, :] = np.hstack([self.TARGET_RPYS[j, :], np.zeros((3,)), np.zeros((3,)),
+                                                    self.TARGET_POSITIONS[j, :]])
 
                 action[j, :], u = dLQR.compute(obs[j])
 
             obs, _, _, _, _ = env.step(action)
             t += env.CTRL_TIMESTEP
-            env.render()
+            if do_print:
+                env.render()
             sync(steps, START, env.CTRL_TIMESTEP)
             steps += 1
 
@@ -224,14 +245,18 @@ class GeometricEnv:
             phis = []
             e_tp1s = []
             action = np.zeros((args.num_drones, 4))
-
-            x_des = np.zeros((12,))
+            r, p, y = Rotation.from_quat(env.quat.flatten()).as_euler('xyz')
+            if np.abs(r) > np.pi / 2 or np.abs(p) > np.pi / 2:
+                print("Crashing in exploration phase")
+                return steps
+            # x_des = np.zeros((12,))
             # pos, vel, acc, yaw, omega = traj(t)
             # dLQR.set_desired_trajectory(desired_pos=pos, desired_vel=vel, desired_acc=acc, desired_yaw=yaw,
             #                             desired_omega=omega)
             # x_des = np.hstack([[0, 0, yaw], [0, 0, omega], vel, pos])
             for j in range(args.num_drones):
                 x = obs_to_lin_model(obs[j])
+                x_des = last_desired[j, :]
                 e = dLQR.error_state(x, x_des)
 
                 u = dLQR.sigma_explore()
@@ -266,10 +291,12 @@ class GeometricEnv:
 
             # update the theta and V values
             if i != 0: #skip first because the control input was different
-                dLQR.theta_update(phis, e_tp1s)
+                # dLQR.theta_update(phis, e_tp1s)
+                dLQR.new_theta_update(phis, e_tp1s)
 
             t += env.CTRL_TIMESTEP
-            env.render()
+            if do_print:
+                env.render()
             sync(steps, START, env.CTRL_TIMESTEP)
             steps += 1
         return steps
