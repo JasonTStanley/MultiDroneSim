@@ -80,12 +80,12 @@ class DecentralizedLQR(BaseController):
     def get_thetai(self, i):
         #need to extract Ai and Bi
         Ai = self.theta[i * 12:(i + 1) * 12, 12 * i:(i + 1) * 12].T
-        Bi = self.theta[(12*self.num_robots+4*i):(12*self.num_robots + 4*(i+1)), :12].T
+        Bi = self.theta[(12*self.num_robots+4*i):(12*self.num_robots + 4*(i+1)), 12*i:(12*(i+1))].T
         return np.hstack([Ai, Bi]).T
 
     def overwrite_theta(self, theta_new, i):
         self.theta[i * 12:(i + 1) * 12, 12 * i:(i + 1) * 12] = theta_new[:12, :]
-        self.theta[(12 * self.num_robots + 4 * i):(12 * self.num_robots + 4 * (i + 1)), :12] = theta_new[12:, :]
+        self.theta[(12 * self.num_robots + 4 * i):(12 * self.num_robots + 4 * (i + 1)), 12*i:(12*(i+1))] = theta_new[12:, :]
 
     def forward_predict(self, e, u):
         Ahat = self.get_thetai(0)[:12, :].T

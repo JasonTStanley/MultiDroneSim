@@ -28,7 +28,7 @@ DEFAULT_SIMULATION_FREQ_HZ = 100
 DEFAULT_CONTROL_FREQ_HZ = 100
 DEFAULT_DURATION_SEC = 5
 DEFAULT_OUTPUT_FOLDER = 'results'
-DEFAULT_NUM_DRONES = 2  # 2
+DEFAULT_NUM_DRONES = 3  # 2
 controllers = ['lqr', 'geometric']  # whichever is first will be default
 
 
