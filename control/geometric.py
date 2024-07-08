@@ -43,8 +43,10 @@ class GeometricControl(BaseController):
         arr_out[2] = -R[0, 1]
         return arr_out
 
-    def set_desired_trajectory(self, desired_pos, desired_vel, desired_acc, desired_yaw, desired_omega):
+    def set_desired_trajectory(self, robot_idx, desired_pos, desired_vel, desired_acc, desired_yaw, desired_omega):
         '''
+        disregard robot_idx because this controller is for a single robot.
+
         desired_vel is represented in the world-frame
         desired_omega is represented in the body-frame
         '''

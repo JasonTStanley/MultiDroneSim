@@ -57,7 +57,9 @@ class LQRController(BaseController):
         # K = R^-1 @ B^T @ P
         self.K = la.solve(self.R, self.lin_model.B.T @ self.P)
 
-    def set_desired_trajectory(self, desired_pos, desired_vel, desired_acc, desired_yaw, desired_omega):
+    def set_desired_trajectory(self, robot_idx, desired_pos, desired_vel, desired_acc, desired_yaw, desired_omega):
+        #ignore robot_idx as this is for a single robot.
+
         self.desired_pos = desired_pos
         self.desired_vel = desired_vel
         self.desired_omega = desired_omega

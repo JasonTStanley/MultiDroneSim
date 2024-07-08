@@ -28,7 +28,7 @@ DEFAULT_SIMULATION_FREQ_HZ = 100
 DEFAULT_CONTROL_FREQ_HZ = 100
 DEFAULT_DURATION_SEC = 5
 DEFAULT_OUTPUT_FOLDER = 'results'
-DEFAULT_NUM_DRONES = 1  # 2
+DEFAULT_NUM_DRONES = 2  # 2
 controllers = ['lqr', 'geometric']  # whichever is first will be default
 
 
@@ -75,7 +75,7 @@ class GeometricEnv:
         self.TARGET_POSITIONS = np.zeros((args.num_drones, 3))
         self.TARGET_RPYS = np.zeros((args.num_drones, 3))
         self.obs_ts = []
-        self.linear_model = None
+        self.linear_models = None
 
         if circle_init:
             self.starting_target_offset = 1  # initial goal is just 1m above start pose
@@ -95,7 +95,8 @@ class GeometricEnv:
                          output_folder=args.output_folder
                          )
         self.env = env
-        self.linear_model = LinearizedModel(env)
+
+        self.linear_models = [LinearizedModel(env) for _ in range(args.num_drones)]
 
         r = self.env.KM / self.env.KF
         # convert between motor_thrusts and thrust/torques for a PLUS frame drone (CF2P) (is the Crazyflie 2.1 with plus config)
@@ -108,31 +109,19 @@ class GeometricEnv:
     def fedCE(self):
         num_iter = 100 #number loops
         env = self.env
+        args = self.args
         steps = 0
-        dLQR = DecentralizedLQR(env, [self.linear_model])
+        dLQR = DecentralizedLQR(env, self.linear_models)
         START = time.time()
         for n in range(num_iter):
             steps = self.fedCE_iteration(env, dLQR, START, steps, n, do_warmup=(n==0), random_warmup=True)
-            thetaA = dLQR.theta[:12, :].T
-            thetaB = dLQR.theta[12:, :].T
+            thetaA = dLQR.theta[:12*args.num_drones, :].T
+            thetaB = dLQR.theta[12*args.num_drones:, :].T
             with np.printoptions(precision=3, suppress=True, linewidth=100000):
                 print(f"n: {n}, steps: {steps}")
                 print("Theta A:\n ", thetaA)
-                # print("Theta B:\n ", thetaB)
-                # print("True A:\n ", self.linear_model.A)
-                # print("True B:\n ", self.linear_model.B)
+                print("Theta B:\n ", thetaB)
 
-            r, p, y = Rotation.from_quat(env.quat.flatten()).as_euler('xyz')
-            if np.abs(r) > np.pi / 2 or np.abs(p) > np.pi / 2:
-                print("Crashed")
-                break
-
-
-
-
-                #print key values of A, B
-                # print(f"Theta A: (g, -g): ({thetaA[6,1]},{thetaA[7,0]}) ")
-                # print(f"Theta B: 1/m: {thetaB[8,0]} 1/J:\n {thetaB[3:6, 1:]}")
         env.close()
 
     def fedCE_iteration(self, env, dLQR, START, steps, n, k=2, do_warmup=True, random_warmup=True, do_lemniscate=False, do_print=False):
@@ -140,7 +129,7 @@ class GeometricEnv:
         Tce = n * (k**3)
         Tw = 0
         if do_warmup:
-            Tw = 100 # some small warmup
+            Tw = 25 # some small warmup
 
         args = self.args
         action = np.zeros((args.num_drones, 4))
@@ -163,6 +152,10 @@ class GeometricEnv:
                 if random_warmup:
                     u = dLQR.sigma1()
                     act = conversions.input_to_action(env, u)
+                    # set x_des to be the starting point
+                    x_des = np.zeros((12,))
+                    x_des[0:3] = self.INIT_RPYS[j, :]
+                    x_des[-3:] = self.INIT_XYZS[j, :]
                 else:
                     pos, vel, acc, yaw, omega = traj(t)
                     x_des = np.hstack([[0, 0, yaw], [0, 0, omega], vel, pos])
@@ -185,6 +178,9 @@ class GeometricEnv:
             for j in range(args.num_drones):
                 # need to offset by the error
                 x_tp1 = obs_to_lin_model(obs[j])
+                x_des = np.zeros((12,))
+                x_des[0:3] = self.INIT_RPYS[j, :]
+                x_des[-3:] = self.INIT_XYZS[j, :]
                 e_tp1 = dLQR.error_state(x_tp1, x_des)
                 # e = phis[j][:12]
                 # u = phis[j][12:]
@@ -209,21 +205,15 @@ class GeometricEnv:
         last_desired = np.zeros((args.num_drones, 12))
         dLQR.compute_controller()
         for i in range(Tce):
-            # ensure we aren't crashing
-            r, p, y = Rotation.from_quat(env.quat.flatten()).as_euler('xyz')
-            if np.abs(r) > np.pi / 2 or np.abs(p) > np.pi / 2:
-                print("Crashing in CE")
-                return steps
             #compute controller from current observations and use it to achieve some task
-            action = np.zeros((args.num_drones, 4))
             for j in range(args.num_drones):
                 if do_lemniscate:
                     pos, vel, acc, yaw, omega = traj(t)
-                    dLQR.set_desired_trajectory(desired_pos=pos, desired_vel=vel, desired_acc=acc,
+                    dLQR.set_desired_trajectory(j, desired_pos=pos, desired_vel=vel, desired_acc=acc,
                                                    desired_yaw=yaw,
                                                    desired_omega=omega)
                 else:
-                    dLQR.set_desired_trajectory(desired_pos=self.TARGET_POSITIONS[j, :],
+                    dLQR.set_desired_trajectory(j, desired_pos=self.TARGET_POSITIONS[j, :],
                                                    desired_vel=np.zeros((3,)),
                                                    desired_acc=np.zeros((3,)),
                                                    desired_yaw=self.TARGET_RPYS[j, :][2],
@@ -231,7 +221,7 @@ class GeometricEnv:
                     last_desired[j, :] = np.hstack([self.TARGET_RPYS[j, :], np.zeros((3,)), np.zeros((3,)),
                                                     self.TARGET_POSITIONS[j, :]])
 
-                action[j, :], u = dLQR.compute(obs[j])
+            action, u = dLQR.compute(obs)
 
             obs, _, _, _, _ = env.step(action)
             t += env.CTRL_TIMESTEP
@@ -245,10 +235,6 @@ class GeometricEnv:
             phis = []
             e_tp1s = []
             action = np.zeros((args.num_drones, 4))
-            r, p, y = Rotation.from_quat(env.quat.flatten()).as_euler('xyz')
-            if np.abs(r) > np.pi / 2 or np.abs(p) > np.pi / 2:
-                print("Crashing in exploration phase")
-                return steps
             # x_des = np.zeros((12,))
             # pos, vel, acc, yaw, omega = traj(t)
             # dLQR.set_desired_trajectory(desired_pos=pos, desired_vel=vel, desired_acc=acc, desired_yaw=yaw,
@@ -274,19 +260,10 @@ class GeometricEnv:
 
             for j in range(args.num_drones):
                 # need to offset by the error
-
+                x_des = last_desired[j, :]
                 x_tp1 = obs_to_lin_model(obs[j])
                 e_tp1 = dLQR.error_state(x_tp1, x_des)
                 e_tp1s.append(e_tp1)
-                # e = phis[j][:12]
-                # u = phis[j][12:]
-                # pred_e_tp1 = dLQR.forward_predict(e, u)
-                # print("diff norm: ", np.linalg.norm(e_tp1 - pred_e_tp1))
-                # if np.linalg.norm(e_tp1 - pred_e_tp1) > 1e-2:
-                #     print("e_tp1: ", e_tp1)
-                #     print("pred_e_tp1: ", pred_e_tp1)
-                #     print("diff: ", e_tp1 - pred_e_tp1)
-
 
 
             # update the theta and V values
@@ -316,7 +293,7 @@ class GeometricEnv:
         # CTRL_STEPS = int(args.duration_sec * env.CTRL_FREQ)
 
         t = 0
-        dLQR = DecentralizedLQR(env, [self.linear_model])
+        dLQR = DecentralizedLQR(env, self.linear_models)
         traj = Lemniscate(center=np.array([0, 0, .5]), omega=.5, yaw_rate=1)
 
         for i in range(TW):
@@ -376,8 +353,8 @@ class GeometricEnv:
         with np.printoptions(precision=3, suppress=True):
             print("Theta A:\n ", thetaA)
             print("Theta B:\n ", thetaB)
-            print("True A:\n ", self.linear_model.A)
-            print("True B:\n ", self.linear_model.B)
+            print("True A0:\n ", self.linear_models[0].A)
+            print("True B0:\n ", self.linear_models[0].B)
         # Close the environment
         env.close()
         dLQR.compute_controller()
@@ -401,10 +378,10 @@ class GeometricEnv:
                     geo_ctrl = GeometricControl(env)
                     ctrl.append(geo_ctrl)
                 if args.controller == 'lqr':
-                    lqr_ctrl = LQRController(env, self.linear_model)
+                    lqr_ctrl = LQRController(env, self.linear_models[i])
                     ctrl.append(lqr_ctrl)
                 if args.controller == 'dlqr':
-                    dLQR = DecentralizedLQR(env, [self.linear_model])
+                    dLQR = DecentralizedLQR(env, self.linear_models[i])
                     dLQR.K = computed_K
                     ctrl.append(dLQR)
 
@@ -418,10 +395,10 @@ class GeometricEnv:
             for j in range(args.num_drones):
                 if do_lemniscate:
                     pos, vel, acc, yaw, omega = traj(t)
-                    ctrl[j].set_desired_trajectory(desired_pos=pos, desired_vel=vel, desired_acc=acc, desired_yaw=yaw,
+                    ctrl[j].set_desired_trajectory(j, desired_pos=pos, desired_vel=vel, desired_acc=acc, desired_yaw=yaw,
                                                    desired_omega=omega)
                 else:
-                    ctrl[j].set_desired_trajectory(desired_pos=self.TARGET_POSITIONS[j, :], desired_vel=np.zeros((3,)),
+                    ctrl[j].set_desired_trajectory(j, desired_pos=self.TARGET_POSITIONS[j, :], desired_vel=np.zeros((3,)),
                                                    desired_acc=np.zeros((3,)), desired_yaw=self.TARGET_RPYS[j, :][2],
                                                    desired_omega=0)
 
@@ -496,7 +473,7 @@ if __name__ == "__main__":
     env = geo.create_env()
     # computed_K, theta = geo.warm_up_only()
     geo.fedCE()
-    # geo.do_control(do_lemniscate=True)
+    # geo.do_control(do_lemniscate=False)
     exit()
     geo.args.controller = 'dlqr'
     env = geo.create_env()
