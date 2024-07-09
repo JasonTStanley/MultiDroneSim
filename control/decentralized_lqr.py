@@ -87,31 +87,40 @@ class DecentralizedLQR(BaseController):
         self.theta[i * 12:(i + 1) * 12, 12 * i:(i + 1) * 12] = theta_new[:12, :]
         self.theta[(12 * self.num_robots + 4 * i):(12 * self.num_robots + 4 * (i + 1)), 12*i:(12*(i+1))] = theta_new[12:, :]
 
-    def forward_predict(self, e, u):
-        Ahat = self.get_thetai(0)[:12, :].T
-        Bhat = self.get_thetai(0)[12:, :].T
+    def forward_predict(self, e, u, i):
+        Ahat = self.get_thetai(i)[:12, :].T
+        Bhat = self.get_thetai(i)[12:, :].T
         def f(t, e):
             return Ahat @ e + Bhat @ u
         y0 = e
         sol = scipy.integrate.solve_ivp(f, [0, self.env.CTRL_TIMESTEP], y0)
         return sol.y[:, -1]
 
+    def solve_xtp1(self, e, u, i):
+        Ahat = self.get_thetai(i)[:12, :].T
+        Bhat = self.get_thetai(i)[12:, :].T
+        I = np.eye(12)
+        xtp1 = (I + Ahat * self.env.CTRL_TIMESTEP) @ e + Bhat @ u * self.env.CTRL_TIMESTEP + (1/2.0) * Ahat @ Bhat @ u * self.env.CTRL_TIMESTEP**2
+        return xtp1
     def theta_update(self, phis, xtp1s):
-        # update the appropriate theta
         for i in range(self.num_robots):
-            #we need to estimate x_dot from observations of x_tp1 so we regress to the continuous model
             x_tp1 = xtp1s[i].reshape((12, 1))
             phi = phis[i].reshape((16, 1))
-            x_dot = (x_tp1 - phi[:12]) / self.env.CTRL_TIMESTEP #estimate x_dot
-            V = self.V[16 * i:16 * (i + 1), 16 * i:16 * (i + 1)]
-            th_i = self.get_thetai(i)
-            theta_new = th_i + np.linalg.pinv(V) @ phi @ (x_dot.T - phi.T @ th_i)
-            V_new = V + phi @ phi.T
-            self.theta[i * 16:(i + 1) * 16, i * 12:(i + 1) * 12] = theta_new
-            self.V[16 * i:16 * (i + 1), 16 * i:16 * (i + 1)] = V_new
 
-        #project back to known zeros
-        self.project_theta()
+            P = self.P[i]
+            L = P @ phi @ np.linalg.inv(1 + phi.T @ P @ phi)
+
+            th_i = self.get_thetai(i)
+            # pred_xtp1 = self.forward_predict(x_tp1.flatten(), phi[-4:].flatten(), i)
+            #TODO check if this solve_xtp1 function is correct
+            pred_xtp1_2 = self.solve_xtp1(x_tp1, phi[-4:], i).flatten()
+
+            # diff = np.linalg.norm(pred_xtp1_2 - pred_xtp1)
+            # if diff > 1e-4:
+            #     print("difference in integration: " + str(diff))
+            theta_new = th_i + L @ (x_tp1.T - pred_xtp1_2)
+            self.overwrite_theta(theta_new, i)
+            self.P[i] = (np.eye(16) - L @ phi.T) @ P # update P
 
     def est_x_dot(self, x_tp1, phi):
         phi = phi.reshape((16,))
@@ -124,7 +133,7 @@ class DecentralizedLQR(BaseController):
         x_dot[9:] = (phi[6:9] + x_tp1[6:9]) / 2.0 # avg of the two linear vels
 
         return x_dot
-    def new_theta_update(self, phis, xtp1s):
+    def approx_theta_update(self, phis, xtp1s):
         for i in range(self.num_robots):
             # we need to estimate x_dot from observations of x_tp1 so we regress to the continuous model
             x_tp1 = xtp1s[i].reshape((12, 1))

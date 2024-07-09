@@ -28,7 +28,7 @@ DEFAULT_SIMULATION_FREQ_HZ = 100
 DEFAULT_CONTROL_FREQ_HZ = 100
 DEFAULT_DURATION_SEC = 5
 DEFAULT_OUTPUT_FOLDER = 'results'
-DEFAULT_NUM_DRONES = 3  # 2
+DEFAULT_NUM_DRONES = 2  # 2
 controllers = ['lqr', 'geometric']  # whichever is first will be default
 
 
@@ -192,8 +192,8 @@ class GeometricEnv:
 
             # update the theta and V values
             if i != 0: #skip first because the control input was not applied
-                # dLQR.theta_update(phis, e_tp1s)
-                dLQR.new_theta_update(phis, e_tp1s)
+                dLQR.theta_update(phis, e_tp1s)
+                # dLQR.approx_theta_update(phis, e_tp1s)
 
             if do_print:
                 env.render()
@@ -268,8 +268,8 @@ class GeometricEnv:
 
             # update the theta and V values
             if i != 0: #skip first because the control input was different
-                # dLQR.theta_update(phis, e_tp1s)
-                dLQR.new_theta_update(phis, e_tp1s)
+                dLQR.theta_update(phis, e_tp1s)
+                # dLQR.approx_theta_update(phis, e_tp1s)
 
             t += env.CTRL_TIMESTEP
             if do_print:
