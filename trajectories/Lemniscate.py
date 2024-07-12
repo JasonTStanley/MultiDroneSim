@@ -8,14 +8,26 @@ class TrajectoryBase:
         '''
         raise NotImplementedError
 
+    def get_total_time(self):
+        raise NotImplementedError
+
 class Lemniscate(TrajectoryBase):
 
-    def __init__(self, a=1, omega=.5, center=np.array([0,0,0]), yaw_rate=0):
+    def __init__(self, a=1, omega=.5, center=np.array([0,0,0]), yaw_rate=0, revolutions=None, duration=None):
         self.a = a
         self.omega = omega
         self.center = center
         self.yaw_rate = yaw_rate
 
+        if revolutions is not None:
+            self.total_time = 2*np.pi*revolutions/omega
+        elif duration is not None:
+            self.total_time = duration
+        else:
+            self.total_time = 2*np.pi/omega #default to one revolution if neither duration nor revolutions are specified
+
+    def get_total_time(self):
+        return self.total_time
     def __call__(self, t):
         pos = np.zeros(3)
         vel = np.zeros(3)

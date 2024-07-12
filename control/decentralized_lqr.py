@@ -20,27 +20,41 @@ class DecentralizedLQR(BaseController):
         max_torque_yaw = 0.001
         rflat = [1 / (max_thrust ** 2), 1 / (max_torque_pitch_roll ** 2), 1 / (max_torque_pitch_roll ** 2),
                  1 / (max_torque_yaw ** 2)]
-        R = np.diag(rflat)
         max_vel_error = .15
         max_pos_error = .05
-        max_yaw_error = np.pi / 40
-        max_pitch_roll_error = np.pi / 40
-        max_pitch_yaw_rate_error = .25
-        max_yaw_rate_error = .25
+        max_yaw_error = np.pi / 20
+        max_pitch_roll_error = np.pi / 10
+        max_pitch_yaw_rate_error = .5
+        max_yaw_rate_error = .5
         # stack into Q in order of state x=[r, p, y, r_dot, p_dot, y_dot, vx, vy, vz, px, py, pz]
         qflat = [1 / (max_pitch_roll_error ** 2), 1 / (max_pitch_roll_error ** 2), 1 / (max_yaw_error ** 2),
                  1 / (max_pitch_yaw_rate_error ** 2), 1 / (max_pitch_yaw_rate_error ** 2),
                  1 / (max_yaw_rate_error ** 2),
                  1 / (max_vel_error ** 2), 1 / (max_vel_error ** 2), 1 / (max_vel_error ** 2),
                  1 / (max_pos_error ** 2), 1 / (max_pos_error ** 2), 1 / (max_pos_error ** 2)]
-        Q = np.diag(qflat)
 
-        print(qflat)
-        print(rflat)
         self.lin_models = lin_models
-        self.Q = Q
-        self.R = R
         self.num_robots = len(lin_models)
+        self.ind_Q = np.diag(qflat)
+        self.ind_R = np.diag(rflat)
+        self.Q = np.kron(np.eye(self.num_robots), self.ind_Q)  # duplicate the Q and R matrices for each robot
+        self.R = np.kron(np.eye(self.num_robots), self.ind_R)
+        robot_12_xy = np.index_exp[9:11, 21:23]
+        robot_21_xy = np.index_exp[21:23, 9:11]
+        robot_12_vxy = np.index_exp[6:8, 18:20]
+        robot_21_vxy = np.index_exp[18:20, 6:8]
+
+        #set some positive weight for the xy position of the robots
+        multi_xy_err = .1
+        multi_vxy_err = 0
+        self.Q[robot_12_xy] = -1/(multi_xy_err**2)
+        self.Q[robot_21_xy] = -1/(multi_xy_err**2)
+        # self.Q[robot_12_vxy] = 1/(multi_vxy_err**2)
+        # self.Q[robot_21_vxy] = 1/(multi_vxy_err**2)
+        with np.printoptions(precision=3, suppress=True, linewidth=100000):
+            print(f"Full Q: \n{self.Q}")
+            print(f"Full R: \n{self.R}")
+
         self.Astar = np.zeros((12 * self.num_robots, 12 * self.num_robots))
         self.Bstar = np.zeros((12 * self.num_robots, 4 * self.num_robots))
         for i, agent in enumerate(lin_models):
@@ -111,14 +125,13 @@ class DecentralizedLQR(BaseController):
             L = P @ phi @ np.linalg.inv(1 + phi.T @ P @ phi)
 
             th_i = self.get_thetai(i)
-            # pred_xtp1 = self.forward_predict(x_tp1.flatten(), phi[-4:].flatten(), i)
-            #TODO check if this solve_xtp1 function is correct
-            pred_xtp1_2 = self.solve_xtp1(x_tp1, phi[-4:], i).flatten()
+            pred_xtp1 = self.forward_predict(x_tp1.flatten(), phi[-4:].flatten(), i)
+            # pred_xtp1 = self.solve_xtp1(x_tp1, phi[-4:], i).flatten()
 
             # diff = np.linalg.norm(pred_xtp1_2 - pred_xtp1)
             # if diff > 1e-4:
             #     print("difference in integration: " + str(diff))
-            theta_new = th_i + L @ (x_tp1.T - pred_xtp1_2)
+            theta_new = th_i + L @ (x_tp1.T - pred_xtp1)
             self.overwrite_theta(theta_new, i)
             self.P[i] = (np.eye(16) - L @ phi.T) @ P # update P
 
@@ -205,19 +218,17 @@ class DecentralizedLQR(BaseController):
             for i in range(self.num_robots):
                 A = self.theta[:12 * self.num_robots, :].T[12*i:12*(i+1), 12*i:12*(i+1)]
                 B = self.theta[12 * self.num_robots:, :].T[12*i:12*(i+1), 4*i:4*(i+1)]
-                # A = self.Astar[12*i:12*(i+1), 12*i:12*(i+1)]
+                # A = self.Astar[12*i:12*(i+1), 12*i:12*(i+1)] testing with baseline A,B instead of learned
                 # B = self.Bstar[12*i:12*(i+1), 4*i:4*(i+1)]
-                P = la.solve_continuous_are(A, B, self.Q, self.R, e=None, s=None, balanced=True)
+                P = la.solve_continuous_are(A, B, self.ind_Q, self.ind_R, e=None, s=None, balanced=True)
                 K_i = la.solve(self.R, B.T @ P)
                 self.K[4*i:4*(i+1), 12*i:12*(i+1)] = K_i
         else:
 
             A = self.theta[:12*self.num_robots, :].T #ensure that this extracs A and B properly
             B = self.theta[12*self.num_robots:, :].T
-            Q = np.kron(np.eye(self.num_robots), self.Q) # duplicate the Q and R matrices for each robot
-            R = np.kron(np.eye(self.num_robots), self.R)
-            P = la.solve_continuous_are(A, B, Q, R, e=None, s=None, balanced=True)
-            self.K = la.solve(R, B.T @ P)
+            P = la.solve_continuous_are(A, B, self.Q, self.R, e=None, s=None, balanced=True)
+            self.K = la.solve(self.R, B.T @ P)
 
 
     def set_desired_trajectory(self, robot_idx, desired_pos, desired_vel, desired_acc, desired_yaw, desired_omega):
@@ -245,6 +256,8 @@ class DecentralizedLQR(BaseController):
                 for i in range(self.num_robots)]
         #select out the correct A and B matrices for the robot
         us = np.array([-self.K[:, (12*i):12*(i+1)] @ es[i] for i in range(self.num_robots)])
+        if us[0][-4:][2] < 0:
+            print("effort to evade (ty): " + str( us[0][-4:][2]))
         u = np.sum(us, axis=0)
 
         u_robot = np.array([u[(4*i):(4*(i+1))] for i in range(self.num_robots)])
