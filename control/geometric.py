@@ -56,7 +56,7 @@ class GeometricControl(BaseController):
         self.desired_yaw = desired_yaw
         self.desired_omega = desired_omega
 
-    def compute(self, obs):
+    def compute(self, obs, return_omegas=False):
         '''
         NOTES:
         - Velocities are represented in the body-frame
@@ -73,6 +73,7 @@ class GeometricControl(BaseController):
         f_des_body = RT @ (self.m * self.g * self.e3) - self.m * RT @ np.diag(self.Kp) @ (p - p_des) - self.m * np.diag(
             self.Kv) @ (v - RT @ v_des) + self.m * (RT @ a_des - w_hat @ RT @ v_des)
         f_des_world = R @ f_des_body
+
 
         # Limit tilt angle
         tilt_angle = np.arccos(f_des_world[2] / np.linalg.norm(f_des_world))
@@ -101,6 +102,10 @@ class GeometricControl(BaseController):
         w_des_hat = np.matmul(R_des.transpose(0, 1), R_dot_des)
         w_des = np.array([w_des_hat[2, 1], w_des_hat[0, 2], w_des_hat[1, 0]])
 
+        #optionally return f_des_body[2] and w_des if torque control is not possible.
+        if return_omegas:
+            force = f_des_world.T @ (R @ self.e3)
+            return force, w_des, R_des
         e_R = 0.5 * np.diag(self.KR) @ self.vee_map(R_des.T @ R - R.T @ R_des)
         torque = self.J @ (-e_R - np.diag(self.Kw) @ (w - np.matmul(RT, np.matmul(R_des, w_des)))) - np.cross(w,
                                                                                                               self.J @ w)

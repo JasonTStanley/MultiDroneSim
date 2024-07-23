@@ -3,8 +3,6 @@
 
 import argparse
 import time
-
-import numpy as np
 import pybullet as p
 from gym_pybullet_drones.envs.BaseAviary import DroneModel, Physics
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
@@ -14,8 +12,8 @@ from scipy.spatial.transform import Rotation
 import utils
 import utils.model_conversions as conversions
 # Pybullet drone environment
-from control import GeometricControl, LQRController, DecentralizedLQR
-from model import LinearizedModel
+from control import GeometricControl, LQROmegaController, DecentralizedLQR, ThrustOmegaController
+from model import LinearizedOmegaModel
 from trajectories import *
 from utils import obs_to_lin_model
 
@@ -25,9 +23,9 @@ DEFAULT_GUI = True  # usually true
 DEFAULT_PLOT = False  # usually true
 DEFAULT_RECORD = False
 DEFAULT_USER_DEBUG_GUI = False
-DEFAULT_SIMULATION_FREQ_HZ = 100
-DEFAULT_CONTROL_FREQ_HZ = 100
-DEFAULT_DURATION_SEC = 18
+DEFAULT_SIMULATION_FREQ_HZ = 240
+DEFAULT_CONTROL_FREQ_HZ = 240
+DEFAULT_DURATION_SEC = 50
 DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_NUM_DRONES = 1  # 2
 controllers = ['lqr', 'geometric']  # whichever is first will be default
@@ -70,6 +68,7 @@ class GeometricEnv:
         self.obs = None
         self.conversion_mat = None
         self.observations = []
+        self.angular_velocities = []
         self.args = args
         self.INIT_XYZS = np.zeros((args.num_drones, 3))
         self.INIT_RPYS = np.zeros((args.num_drones, 3))  # for now start all drones at Identity starting orientataion
@@ -95,9 +94,10 @@ class GeometricEnv:
                          user_debug_gui=args.user_debug_gui,
                          output_folder=args.output_folder
                          )
+        # p.setPhysicsEngineParameter(numSubSteps=0)
         self.env = env
 
-        self.linear_models = [LinearizedModel(env) for _ in range(args.num_drones)]
+        self.linear_models = [LinearizedOmegaModel(env) for _ in range(args.num_drones)]
 
         r = self.env.KM / self.env.KF
         # convert between motor_thrusts and thrust/torques for a PLUS frame drone (CF2P) (is the Crazyflie 2.1 with plus config)
@@ -277,84 +277,7 @@ class GeometricEnv:
             steps += 1
         return steps
 
-    def warm_up_only(self, TW=500):
-        env = self.env
-        args = self.args
-        env._showDroneLocalAxes(0)
-
-        # Run the simulation
-        START = time.time()
-        action = np.zeros((args.num_drones, 4))
-        obs, _, _, _, _ = env.step(action)
-        # CTRL_STEPS = int(args.duration_sec * env.CTRL_FREQ)
-
-        t = 0
-        dLQR = DecentralizedLQR(env, self.linear_models)
-        traj = Lemniscate(center=np.array([0, 0, .5]), omega=.5, yaw_rate=1)
-
-        for i in range(TW):
-            phis = []
-            e_tp1s = []
-            action = np.zeros((args.num_drones, 4))
-
-            # pos, vel, acc, yaw, omega = traj(t)
-            pos, vel, acc, yaw, omega = np.zeros((3,)), np.zeros((3,)), np.zeros((3,)), 0, 0  # when doing random warmup
-            x_des = np.hstack([[0, 0, yaw], [0, 0, omega], vel, pos])
-            for j in range(args.num_drones):
-                x = obs_to_lin_model(obs[j])
-                u = dLQR.sigma1()
-                act = conversions.input_to_action(env, u)
-                e = dLQR.error_state(x, x_des)
-                # act, u_orig = dLQR.LQR(obs[j], pos=pos, vel=vel, yaw=yaw, omega=omega)
-                # clip u to be within bounds
-                u = utils.action_to_input(env, act)
-                # offset u by the equilibrium point
-                u[0] = u[0] - env.M * env.G  # for now use groundtruth here TODO replace with estimate?
-
-                # since we have a setpoint, we must calculate the error state to learn theta
-                action[j, :] = act
-                phis.append(np.hstack([e, u]))  # use error state as input state to update phi
-
-            obs, _, _, _, _ = env.step(action)
-            self.obs = obs
-            self.observations.append(obs)
-            self.obs_ts.append(t)
-            t += env.CTRL_TIMESTEP
-
-            for j in range(args.num_drones):
-                # need to offset by the error
-
-                x_tp1 = obs_to_lin_model(obs[j])
-                e_tp1 = dLQR.error_state(x_tp1, x_des)
-                e_tp1s.append(e_tp1)
-
-            # update the theta and V values
-            dLQR.theta_update(phis, e_tp1s)
-
-            env.render()
-            sync(i, START, env.CTRL_TIMESTEP)
-
-            # for j in range(args.num_drones):
-            #     ctrl[j].set_desired_trajectory(desired_pos=self.TARGET_POSITIONS[j, :], desired_vel=np.zeros((3,)),
-            #                                    desired_acc=np.zeros((3,)), desired_yaw=self.TARGET_RPYS[j, :][2],
-            #                                    desired_omega=0)
-            #     action[j, :] = ctrl[j].compute(obs[j])
-
-        # compare theta to the true linear model
-        # print("Theta: ", dLQR.theta)
-        thetaA = dLQR.theta[:12, :].T
-        thetaB = dLQR.theta[12:, :].T
-        with np.printoptions(precision=3, suppress=True):
-            print("Theta A:\n ", thetaA)
-            print("Theta B:\n ", thetaB)
-            print("True A0:\n ", self.linear_models[0].A)
-            print("True B0:\n ", self.linear_models[0].B)
-        # Close the environment
-        env.close()
-        dLQR.compute_controller()
-        return dLQR.K, dLQR.theta
-
-    def do_control(self, trajs=None, render=False):
+    def do_control(self, trajs=None, render=False, computed_K=None):
         env = self.env
         args = self.args
         # for information about collecting a dataset using similar code, see https://github.com/altwaitan/DL4IO/blob/main/examples/pybullet/data_collection.py
@@ -365,6 +288,7 @@ class GeometricEnv:
 
         # PID control for set point regulation
         ctrl = []
+        to_controller = ThrustOmegaController(args.drone, env.G)
         if args.drone in [DroneModel.CF2X, DroneModel.CF2P]:
             if args.controller == 'dlqr':
                 dLQR = DecentralizedLQR(env, self.linear_models)
@@ -376,7 +300,8 @@ class GeometricEnv:
                         geo_ctrl = GeometricControl(env)
                         ctrl.append(geo_ctrl)
                     if args.controller == 'lqr':
-                        lqr_ctrl = LQRController(env, self.linear_models[i])
+                        to_controller = ThrustOmegaController(args.drone, env.G)
+                        lqr_ctrl = LQROmegaController(env, self.linear_models[i], to_controller)
                         ctrl.append(lqr_ctrl)
 
         # Run the simulation
@@ -401,8 +326,55 @@ class GeometricEnv:
                                                       desired_acc=np.zeros((3,)), desired_yaw=self.TARGET_RPYS[j, :][2],
                                                       desired_omega=0)
 
-                if args.controller != 'dlqr':
+                if args.controller == 'geometric':
+                    force, omega, R_des = ctrl[j].compute(obs[j], return_omegas=True)
+
+                    u = np.hstack([force, omega])
+                    #set the omega explicitly, in world coordinates so we must rotate it first
+                    R = Rotation.from_quat(obs[j][3:7]).as_matrix()
+                    w_world = R @ omega
+                    if len(self.angular_velocities) > 523:
+                        print("check angv")
+                    # linear, angular = p.get
+                    forced_omega = env.ang_v[j]
+
+                    thrust_pwm = to_controller._one23DInterface([u[0]])
+
+                    # def _dslPIDAttitudeControl(self,
+                    #                            control_timestep,
+                    #                            thrust,
+                    #                            cur_quat,
+                    #                            target_euler,
+                    #                            target_rpy_rates
+                    #                            ):
+                    targ_rpy = Rotation.from_matrix(R_des).as_euler('xyz', degrees=False)
+                    targ_rpy_ctrl = np.array([0,0,ctrl[j].desired_yaw])
+                    # target_euler = to_controller.calc_target_euler(obs[j][:3], obs[j][3:7], obs[j][10:13],
+                    #                                                     target_pos=ctrl[j].desired_position,
+                    #                                                     target_rpy=np.array([0, 0, ctrl[j].desired_yaw]),
+                    #                                                     target_vel=ctrl[j].desired_velocity)
+                    #test simple way to set desired rpy
+
+                    # compute new target rpy that should be [0,0, desired_yaw] at hover thrust and something angled at the goal position depending on the thrust
+
+                    #this works well only when using targ_rpy from the geometric controller
+                    #for now lets say we can compute the target_rpy, does our method work?
+                    # act = to_controller._dslPIDAttitudeControl(env.CTRL_TIMESTEP, thrust_pwm, obs[j][3:7], target_euler, omega)
+
+                    cur_omega = R.T @ obs[j][13:16]
+                    act, pos_e, rpy_e, omega_e = to_controller.computeControlFromInput(u, env.CTRL_TIMESTEP, obs[j][:3], obs[j][3:7], cur_omega,
+                                                          ctrl[j].desired_position, np.array([0, 0, ctrl[j].desired_yaw]))
+                    print(f'omega_e: {omega_e}, pos_e: {pos_e}, rpy_e: {rpy_e}')
+                    action[j, :] = act
+                elif args.controller == 'lqr':
+                    R = Rotation.from_quat(obs[j][3:7]).as_matrix()
+
+
                     action[j, :], u = ctrl[j].compute(obs[j])
+                    #for now calc these for printing
+                    omega_e = u[1:] - R.T @ obs[j][13:16]
+                    omega = u[1:]
+                    w_world = R @ omega
 
                 # logging.info(f"Action:\n {action}")
                 # logging.info(f"Obs:\n {obs[0]}")
@@ -413,20 +385,22 @@ class GeometricEnv:
             if args.controller == 'dlqr':
                 action, u = ctrl[0].compute(obs)
 
-            p.applyExternalForce(env.DRONE_IDS[0],
-                                 -1,  # -1 for the base, 0-3 for the motors
-                                 forceObj=[.001, 0, 0],  # a force vector
-                                 posObj=[0, 0, 0], flags=p.WORLD_FRAME, physicsClientId=PYB_CLIENT)
+            # p.resetBaseVelocity(env.DRONE_IDS[0], angularVelocity=w_world, physicsClientId=PYB_CLIENT)
+            # p.applyExternalForce(env.DRONE_IDS[0],
+            #                      -1,  # -1 for the base, 0-3 for the motors
+            #                      forceObj=[.001, 0, 0],  # a force vector
+            #                      posObj=[0, 0, 0], flags=p.WORLD_FRAME, physicsClientId=PYB_CLIENT)
 
             obs, _, _, _, _ = env.step(action)
             self.obs = obs
             self.observations.append(obs)
+            self.angular_velocities.append(np.hstack([env.ang_v[0], omega, w_world, omega_e]))
             self.obs_ts.append(t)
             t += env.CTRL_TIMESTEP
             if render:
+                # print(f"Action: {action}")
                 env.render()
-                print(f"Action:\n {action}")
-            #print distance between drones
+            # print distance between drones
             # print("Distance between drones: ", np.linalg.norm(env.pos[0] - env.pos[1]))
             sync(i, START, env.CTRL_TIMESTEP)
         # Close the environment
@@ -481,13 +455,18 @@ if __name__ == "__main__":
     ARGS = parse_args()
     geo = GeometricEnv(ARGS, circle_init=True)
     env = geo.create_env()
-    trajs = [Lemniscate(center=np.array([0, 0, .5]), omega=1, yaw_rate=.1) for _ in range(ARGS.num_drones)]
-    geo.do_control(trajs=trajs, render=True)
+    # geo.args.controller = 'geometric'
+    # trajs = [WaitTrajectory(duration=20, position=geo.TARGET_POSITIONS[j]) for j in range(ARGS.num_drones)]
+    trajs = [Lemniscate(center=np.array([0, 0, .5]), omega=1.5, yaw_rate=0) for _ in range(ARGS.num_drones)]
+    geo.do_control(trajs=trajs, render=False)
+    np.save("observations_omega.npy", geo.observations)
+    np.save("ang_vels.npy", geo.angular_velocities)
+    print("WROTE ANG VELS")
     exit()
     # computed_K, theta = geo.warm_up_only()
-    computed_K, theta = geo.fedCE(num_iter=100)
-    geo.args.controller = 'dlqr'
-    env = geo.create_env()
+    # computed_K, theta = geo.fedCE(num_iter=100)
+    # geo.args.controller = 'dlqr'
+    # env = geo.create_env()
     # traj = Lemniscate(center=np.array([0, 0, .5]), omega=0.5, yaw_rate=0.2)
     delta = np.array([0, 5, 0])
     delta2 = np.array([0, 5, 0])
