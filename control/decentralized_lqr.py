@@ -1,13 +1,12 @@
 import numpy as np
 import scipy.integrate
-
 import scipy.linalg as la
-from control.base_controller import BaseController
+from scipy.spatial.transform import Rotation
+
 from control import lqr_controller
+from control.base_controller import BaseController
 from model.linearized import LinearizedModel
 from utils import obs_to_lin_model, input_to_action
-import utils
-from scipy.spatial.transform import Rotation
 
 
 class DecentralizedLQR(BaseController):
@@ -44,11 +43,11 @@ class DecentralizedLQR(BaseController):
         robot_12_vxy = np.index_exp[6:8, 18:20]
         robot_21_vxy = np.index_exp[18:20, 6:8]
 
-        #set some positive weight for the xy position of the robots
+        # set some positive weight for the xy position of the robots
         multi_xy_err = .1
         multi_vxy_err = 0
-        self.Q[robot_12_xy] = -1/(multi_xy_err**2)
-        self.Q[robot_21_xy] = -1/(multi_xy_err**2)
+        self.Q[robot_12_xy] = -1 / (multi_xy_err ** 2)
+        self.Q[robot_21_xy] = -1 / (multi_xy_err ** 2)
         # self.Q[robot_12_vxy] = 1/(multi_vxy_err**2)
         # self.Q[robot_21_vxy] = 1/(multi_vxy_err**2)
         with np.printoptions(precision=3, suppress=True, linewidth=100000):
@@ -63,22 +62,22 @@ class DecentralizedLQR(BaseController):
             # insert the agent's approximate A and B into the correct position in the Astar and Bstar matrices
             self.Astar[i * 12:(i + 1) * 12, i * 12:(i + 1) * 12] = agent.Ahat
             self.Bstar[i * 12:(i + 1) * 12, i * 4:(i + 1) * 4] = agent.Bhat
-            #here Ahat is the guess of the A matrix of the linearized model
+            # here Ahat is the guess of the A matrix of the linearized model
 
         self.theta = np.hstack([self.Astar, self.Bstar]).T
         self.V = np.eye(16 * self.num_robots)
-        self.P = np.repeat(np.eye(16)[:,:,None], self.num_robots, axis=2).transpose(2,0,1)
+        self.P = np.repeat(np.eye(16)[:, :, None], self.num_robots, axis=2).transpose(2, 0, 1)
         self.lqr_controllers = [lqr_controller.LQRController(env, lin_models[i]) for i in range(self.num_robots)]
         self.K = None
-        self.desired_positions = np.zeros((self.num_robots,3))
-        self.desired_vels = np.zeros((self.num_robots,3))
+        self.desired_positions = np.zeros((self.num_robots, 3))
+        self.desired_vels = np.zeros((self.num_robots, 3))
         self.desired_yaws = np.zeros(self.num_robots)
         self.desired_omegas = np.zeros(self.num_robots)
         A_keep_1 = np.index_exp[(6, 7), (1, 0)]  # refers to (6,1) and (7,0) the g values in the A matrix
         # A_keep_2 = np.index_exp[0:3, 3:6]
-        A_keep_2 = np.index_exp[(0,1,2), (3,4,5)]
+        A_keep_2 = np.index_exp[(0, 1, 2), (3, 4, 5)]
         # A_keep_3 = np.index_exp[9:, 6:9]
-        A_keep_3 = np.index_exp[(9,10,11), (6,7,8)]
+        A_keep_3 = np.index_exp[(9, 10, 11), (6, 7, 8)]
         B_keep_1 = np.index_exp[3:6, 1:]
         B_keep_2 = np.index_exp[8, 0]
         self.A_mask = np.zeros((12 * self.num_robots, 12 * self.num_robots))
@@ -90,22 +89,24 @@ class DecentralizedLQR(BaseController):
             self.B_mask[12 * i:12 * (i + 1), 4 * i:4 * (i + 1)][B_keep_1] = 1
             self.B_mask[12 * i:12 * (i + 1), 4 * i:4 * (i + 1)][B_keep_2] = 1
 
-
     def get_thetai(self, i):
-        #need to extract Ai and Bi
+        # need to extract Ai and Bi
         Ai = self.theta[i * 12:(i + 1) * 12, 12 * i:(i + 1) * 12].T
-        Bi = self.theta[(12*self.num_robots+4*i):(12*self.num_robots + 4*(i+1)), 12*i:(12*(i+1))].T
+        Bi = self.theta[(12 * self.num_robots + 4 * i):(12 * self.num_robots + 4 * (i + 1)), 12 * i:(12 * (i + 1))].T
         return np.hstack([Ai, Bi]).T
 
     def overwrite_theta(self, theta_new, i):
         self.theta[i * 12:(i + 1) * 12, 12 * i:(i + 1) * 12] = theta_new[:12, :]
-        self.theta[(12 * self.num_robots + 4 * i):(12 * self.num_robots + 4 * (i + 1)), 12*i:(12*(i+1))] = theta_new[12:, :]
+        self.theta[(12 * self.num_robots + 4 * i):(12 * self.num_robots + 4 * (i + 1)),
+        12 * i:(12 * (i + 1))] = theta_new[12:, :]
 
     def forward_predict(self, e, u, i):
         Ahat = self.get_thetai(i)[:12, :].T
         Bhat = self.get_thetai(i)[12:, :].T
+
         def f(t, e):
             return Ahat @ e + Bhat @ u
+
         y0 = e
         sol = scipy.integrate.solve_ivp(f, [0, self.env.CTRL_TIMESTEP], y0)
         return sol.y[:, -1]
@@ -114,8 +115,10 @@ class DecentralizedLQR(BaseController):
         Ahat = self.get_thetai(i)[:12, :].T
         Bhat = self.get_thetai(i)[12:, :].T
         I = np.eye(12)
-        xtp1 = (I + Ahat * self.env.CTRL_TIMESTEP) @ e + Bhat @ u * self.env.CTRL_TIMESTEP + (1/2.0) * Ahat @ Bhat @ u * self.env.CTRL_TIMESTEP**2
+        xtp1 = (I + Ahat * self.env.CTRL_TIMESTEP) @ e + Bhat @ u * self.env.CTRL_TIMESTEP + (
+                    1 / 2.0) * Ahat @ Bhat @ u * self.env.CTRL_TIMESTEP ** 2
         return xtp1
+
     def theta_update(self, phis, xtp1s):
         for i in range(self.num_robots):
             x_tp1 = xtp1s[i].reshape((12, 1))
@@ -133,19 +136,20 @@ class DecentralizedLQR(BaseController):
             #     print("difference in integration: " + str(diff))
             theta_new = th_i + L @ (x_tp1.T - pred_xtp1)
             self.overwrite_theta(theta_new, i)
-            self.P[i] = (np.eye(16) - L @ phi.T) @ P # update P
+            self.P[i] = (np.eye(16) - L @ phi.T) @ P  # update P
 
     def est_x_dot(self, x_tp1, phi):
         phi = phi.reshape((16,))
         x_tp1 = x_tp1.reshape((12,))
-        x_dot = np.zeros((12,)) # estimate x_dot using what we know about the system
-        x_dot[0:3] = (phi[3:6] + x_tp1[3:6]) / 2.0 # avg of the two ang vels
-        x_dot[3:6] = (x_tp1[3:6] - phi[3:6]) / self.env.CTRL_TIMESTEP # estimate the angular acceleration
+        x_dot = np.zeros((12,))  # estimate x_dot using what we know about the system
+        x_dot[0:3] = (phi[3:6] + x_tp1[3:6]) / 2.0  # avg of the two ang vels
+        x_dot[3:6] = (x_tp1[3:6] - phi[3:6]) / self.env.CTRL_TIMESTEP  # estimate the angular acceleration
 
-        x_dot[6:9] = (x_tp1[6:9] - phi[6:9]) / self.env.CTRL_TIMESTEP # estimate the linear acceleration
-        x_dot[9:] = (phi[6:9] + x_tp1[6:9]) / 2.0 # avg of the two linear vels
+        x_dot[6:9] = (x_tp1[6:9] - phi[6:9]) / self.env.CTRL_TIMESTEP  # estimate the linear acceleration
+        x_dot[9:] = (phi[6:9] + x_tp1[6:9]) / 2.0  # avg of the two linear vels
 
         return x_dot
+
     def approx_theta_update(self, phis, xtp1s):
         for i in range(self.num_robots):
             # we need to estimate x_dot from observations of x_tp1 so we regress to the continuous model
@@ -158,44 +162,46 @@ class DecentralizedLQR(BaseController):
             # print("L norm: " + str(np.linalg.norm(L)))
             th_i = self.get_thetai(i)
             theta_new = th_i + L @ (x_dot.T - phi.T @ th_i)
-            #update the corresponding parts of theta
+            # update the corresponding parts of theta
 
             # self.theta[i * 16:(i + 1) * 16, i * 12:(i + 1) * 12] = theta_new
             self.overwrite_theta(theta_new, i)
-            self.P[i] = (np.eye(16) - L @ phi.T) @ P # update P
+            self.P[i] = (np.eye(16) - L @ phi.T) @ P  # update P
 
         # self.project_theta()
 
     def sigma1(self):
         # draw a random input force and thrust, ensure that the input is within the bounds
         # thrust must be between 0 and 4*env.M*env.G, torques must be between -0.001 and 0.001
-        thrust = np.random.uniform(.7*self.env.M*self.env.G, 1.5 * self.env.M * self.env.G)
+        thrust = np.random.uniform(.7 * self.env.M * self.env.G, 1.5 * self.env.M * self.env.G)
         torques = np.random.uniform(-0.00001, 0.00001, 3)
         return np.hstack([thrust, torques])
 
     def sigma_explore(self):
-        #do gausian noise around hover with some small covariance for the input
+        # do gausian noise around hover with some small covariance for the input
         thrust_cov = .15 * self.env.M * self.env.G
         torque_xy_cov = 0.005 * self.env.MAX_XY_TORQUE
         torque_z_cov = 0.005 * self.env.MAX_Z_TORQUE
         thrust = np.random.normal(self.env.M * self.env.G, thrust_cov)
         torques = np.random.normal(0, [torque_xy_cov, torque_xy_cov, torque_z_cov])
-        #may need to bound system. ie if we have moved too far in one direction, only allow exploration in the other direction
+        # may need to bound system. ie if we have moved too far in one direction, only allow exploration in the other direction
         return np.hstack([thrust, torques])
 
     def noisy_control(self, obs):
-        action , u = self.compute(obs)
-        thrust = np.random.uniform(.01 * self.env.M * self.env.G, 0.01 * self.env.M * self.env.G) # add noise to the thrust
-        torques = np.random.uniform(-0.000001, 0.000001, 3) # add noise to the torques
+        action, u = self.compute(obs)
+        thrust = np.random.uniform(.01 * self.env.M * self.env.G,
+                                   0.01 * self.env.M * self.env.G)  # add noise to the thrust
+        torques = np.random.uniform(-0.000001, 0.000001, 3)  # add noise to the torques
         ctrl_noise = np.hstack([thrust, torques])
 
         u_noisy = u + ctrl_noise
         action_noisy = input_to_action(self.env, u_noisy)
         return action_noisy, u_noisy
 
-
-    def LQR(self, obs, robot_idx, pos=np.array([0,0,0]), yaw=0, vel=np.array([0,0,0]), omega=0):
-        self.lqr_controllers[robot_idx].set_desired_trajectory(robot_idx, desired_pos=pos, desired_vel=vel, desired_acc=[0,0,0], desired_yaw=yaw, desired_omega=omega)
+    def LQR(self, obs, robot_idx, pos=np.array([0, 0, 0]), yaw=0, vel=np.array([0, 0, 0]), omega=0):
+        self.lqr_controllers[robot_idx].set_desired_trajectory(robot_idx, desired_pos=pos, desired_vel=vel,
+                                                               desired_acc=[0, 0, 0], desired_yaw=yaw,
+                                                               desired_omega=omega)
         action = self.lqr_controllers[robot_idx].compute(obs)
         return action
 
@@ -212,24 +218,23 @@ class DecentralizedLQR(BaseController):
         return e
 
     def compute_controller(self, force_diagonal=False):
-        #extract the A and B matrices from the theta matrix and compute K
+        # extract the A and B matrices from the theta matrix and compute K
         if force_diagonal:
             self.K = np.zeros((4 * self.num_robots, 12 * self.num_robots))
             for i in range(self.num_robots):
-                A = self.theta[:12 * self.num_robots, :].T[12*i:12*(i+1), 12*i:12*(i+1)]
-                B = self.theta[12 * self.num_robots:, :].T[12*i:12*(i+1), 4*i:4*(i+1)]
+                A = self.theta[:12 * self.num_robots, :].T[12 * i:12 * (i + 1), 12 * i:12 * (i + 1)]
+                B = self.theta[12 * self.num_robots:, :].T[12 * i:12 * (i + 1), 4 * i:4 * (i + 1)]
                 # A = self.Astar[12*i:12*(i+1), 12*i:12*(i+1)] testing with baseline A,B instead of learned
                 # B = self.Bstar[12*i:12*(i+1), 4*i:4*(i+1)]
                 P = la.solve_continuous_are(A, B, self.ind_Q, self.ind_R, e=None, s=None, balanced=True)
                 K_i = la.solve(self.R, B.T @ P)
-                self.K[4*i:4*(i+1), 12*i:12*(i+1)] = K_i
+                self.K[4 * i:4 * (i + 1), 12 * i:12 * (i + 1)] = K_i
         else:
 
-            A = self.theta[:12*self.num_robots, :].T #ensure that this extracs A and B properly
-            B = self.theta[12*self.num_robots:, :].T
+            A = self.theta[:12 * self.num_robots, :].T  # ensure that this extracs A and B properly
+            B = self.theta[12 * self.num_robots:, :].T
             P = la.solve_continuous_are(A, B, self.Q, self.R, e=None, s=None, balanced=True)
             self.K = la.solve(self.R, B.T @ P)
-
 
     def set_desired_trajectory(self, robot_idx, desired_pos, desired_vel, desired_acc, desired_yaw, desired_omega):
         self.desired_positions[robot_idx] = desired_pos
@@ -238,7 +243,7 @@ class DecentralizedLQR(BaseController):
         self.desired_omegas[robot_idx] = desired_omega
 
     def project_theta(self):
-        #set the known zeros to zero
+        # set the known zeros to zero
 
         Ahat = self.theta[:-4, :].T
         Bhat = self.theta[-4:, :].T
@@ -248,20 +253,20 @@ class DecentralizedLQR(BaseController):
         Ahat[9:, 6:9] = np.eye(3)
         self.theta = np.hstack([Ahat, Bhat]).T
 
-
     def compute(self, obs):
         es = [self.error_state(obs_to_lin_model(obs[i]),
-                               np.hstack([np.array([0,0, self.desired_yaws[i]]), self.desired_vels[i],
-                                          np.array([0,0, self.desired_omegas[i]]), self.desired_positions[i]]))
-                for i in range(self.num_robots)]
-        #select out the correct A and B matrices for the robot
-        us = np.array([-self.K[:, (12*i):12*(i+1)] @ es[i] for i in range(self.num_robots)])
+                               np.hstack([np.array([0, 0, self.desired_yaws[i]]),
+                                          np.array([0, 0, self.desired_omegas[i]]), self.desired_vels[i],
+                                          self.desired_positions[i]]))
+              for i in range(self.num_robots)]
+        # select out the correct A and B matrices for the robot
+        us = np.array([-self.K[:, (12 * i):12 * (i + 1)] @ es[i] for i in range(self.num_robots)])
         if us[0][-4:][2] < 0:
-            print("effort to evade (ty): " + str( us[0][-4:][2]))
+            print("effort to evade (ty): " + str(us[0][-4:][2]))
         u = np.sum(us, axis=0)
 
-        u_robot = np.array([u[(4*i):(4*(i+1))] for i in range(self.num_robots)])
-        #offset by the equilibrium thrust
+        u_robot = np.array([u[(4 * i):(4 * (i + 1))] for i in range(self.num_robots)])
+        # offset by the equilibrium thrust
         u_robot[:, 0] += self.env.M * self.env.G
         action = np.array([input_to_action(self.env, u) for u in u_robot])
         return action, u
