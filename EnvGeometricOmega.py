@@ -27,7 +27,7 @@ DEFAULT_SIMULATION_FREQ_HZ = 240
 DEFAULT_CONTROL_FREQ_HZ = 240
 DEFAULT_DURATION_SEC = 50
 DEFAULT_OUTPUT_FOLDER = 'results'
-DEFAULT_NUM_DRONES = 1  # 2
+DEFAULT_NUM_DRONES = 2  # 2
 controllers = ['lqr', 'geometric']  # whichever is first will be default
 
 
@@ -197,8 +197,6 @@ class GeometricEnv:
         last_desired = np.zeros((args.num_drones, 9))
         dLQR.compute_controller()
         for i in range(Tce):
-            if i ==0:
-                print("starting ce")
             # compute controller from current observations and use it to achieve some task
             for j in range(args.num_drones):
                 if do_lemniscate:
@@ -226,8 +224,6 @@ class GeometricEnv:
 
         # do exploration
         for i in range(Texp):
-            if i ==0:
-                print("starting exp")
             phis = []
             e_tp1s = []
             action = np.zeros((args.num_drones, 4))
@@ -407,5 +403,5 @@ if __name__ == "__main__":
                                  LineTrajectory(start=(geo.TARGET_POSITIONS[idx] + delta),
                                                 end=(geo.TARGET_POSITIONS[idx]), speed=1)])
              for idx in range(ARGS.num_drones)]
-    geo.do_control(trajs=trajs)
+    geo.do_control(trajs=trajs, computed_K=computed_K, render=False, use_noisy_model=False)
     np.save("observations2.npy", geo.observations)

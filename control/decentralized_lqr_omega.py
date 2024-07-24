@@ -10,7 +10,7 @@ from utils import obs_to_lin_model
 
 
 class DecentralizedLQROmega(BaseController):
-    def __init__(self, env, lin_models: [LinearizedModel]):
+    def __init__(self, env, lin_models: [LinearizedModel], debug=False):
         super().__init__(env)
         # set dimensions of model
         # A is mxm B is mxn, m=9, n=4
@@ -40,10 +40,10 @@ class DecentralizedLQROmega(BaseController):
         self.ind_R = np.diag(rflat)
         self.Q = np.kron(np.eye(self.num_robots), self.ind_Q)  # duplicate the Q and R matrices for each robot
         self.R = np.kron(np.eye(self.num_robots), self.ind_R)
-
-        with np.printoptions(precision=3, suppress=True, linewidth=100000):
-            print(f"Full Q: \n{self.Q}")
-            print(f"Full R: \n{self.R}")
+        if debug:
+            with np.printoptions(precision=3, suppress=True, linewidth=100000):
+                print(f"Full Q: \n{self.Q}")
+                print(f"Full R: \n{self.R}")
 
         self.Astar = np.zeros((self.m * self.num_robots, self.m * self.num_robots))
         self.Bstar = np.zeros((self.m * self.num_robots, self.n * self.num_robots))
