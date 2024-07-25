@@ -54,11 +54,11 @@ class LinearizedOmegaModel:
 
         #initialize Ahat and Bhat to be a slight permutation of A and B
         self.Ahat = self.A.copy()
-        self.Ahat[3, 1] = self.g*0.9
-        self.Ahat[4, 0] = -self.g*0.9
+        self.Ahat[3, 1] = self.g*1.2
+        self.Ahat[4, 0] = -self.g*1.2
 
         self.Bhat = self.B.copy()
-        self.Bhat[5, 0] = (1.0 / self.mass) * 1.1
+        self.Bhat[5, 0] = (1.0 / (self.mass * 0.8) )
 
 
 

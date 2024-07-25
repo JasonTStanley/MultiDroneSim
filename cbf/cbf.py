@@ -38,13 +38,15 @@ class CBF:
 
     # TODO: related max vel, acc, jrk to max roll/pitch
 
-    def __init__(self, xy_only, zscale=2.0, order=3, umax=1e4, safety_radius=1.0,
+    def __init__(self, xy_only, zscale=2.0, order=3, umax=None, safety_radius=1.0,
                  cbf_poles=np.array([-2.2, -2.4, -2.6]),
                  room_bounds=np.array([-4.25, 4.5, -3.5, 4.25, 1.0, 2.0]),
                  vmax=2,
                  amax=3,
                  jmax=4,
-                 ellipsoid_shape='circular'):
+                 A=None,
+                 B=None,
+                 num_agents=1):
         self.zscale = zscale  # scale in z safety distance in super-ellipsoid
         self.order = order  # relative degree of output position w.r.t control input (jerk input: 3; snap input: 4)
         self.umax = umax  # maximum input magnitude
@@ -52,15 +54,12 @@ class CBF:
         self.cbf_poles = cbf_poles  # the closer to 0 the poles are, the more conservative the cbf constraint
         self.xy_only = xy_only  # Whether ignore all z components for ground vehicles
         self.dim = 3  # !!Only handles 3D data
-
+        self.num_agents = num_agents
+        self.xdes = np.zeros((num_agents, 9))
         # Set methods to get the {order}-th derivative of the barrier function for inter-agent collision avoidance
-        self.ellipsoid_shape = ellipsoid_shape
-        if self.ellipsoid_shape == "circular":  # circular in xy
-            self._hdots = self._hdots_circ_ellipsoid
-            self._ctrl_affine = self._control_affine_terms_circ_ellipsoid
-        elif self.ellipsoid_shape == "rectangular":  # rectangular-ish in xy
-            self._hdots = self._hdots_rect_ellipsoid
-            self._ctrl_affine = self._control_affine_terms_rect_ellipsoid
+
+        self._hdots = self.custom_hdots_second
+        self._ctrl_affine = self.custom_control_affine_terms
 
         assert len(
             room_bounds) == 6, "Require xmin, xmax, ymin, ymax, zmin, zmax (6 values), but len(room_bounds)={}".format(
@@ -95,20 +94,29 @@ class CBF:
                 self.state_bounds[i] = StateBound(min_bounds=np.array([-self.jmax] * 3),
                                                   max_bounds=np.array([self.jmax] * 3))
 
-        # Generate feedback gain for the integrator system
-        self.A = np.zeros((self.order, self.order))
-        for i in range(self.order - 1):
-            self.A[i, i + 1] = 1.0
-        self.B = np.zeros((self.order, 1))
-        self.B[-1, 0] = 1.0
+        if A is not None and B is not None:
+            # Generate feedback gain for the integrator system
+            self.A = np.zeros((self.order, self.order))
+            for i in range(self.order - 1):
+                self.A[i, i + 1] = 1.0
+            self.B = np.zeros((self.order, 1))
+            self.B[-1, 0] = 1.0
         self.Kcbf = np.asarray(signal.place_poles(self.A, self.B, cbf_poles).gain_matrix)
+
+    def set_xdes(self, xdes):
+        if xdes.shape != self.xdes.shape:
+            if xdes.shape[0] == self.xdes.shape[0] * self.xdes.shape[1]:
+                self.xdes = xdes.reshape(self.xdes.T.shape).T  # TODO ensure the reshaping works properly
+            else:
+                raise ValueError("xdes shape {} does not match expected shape {}".format(xdes.shape, self.xdes.shape))
+        self.xdes = xdes
 
     def rectify(self, x, uhat, ignore_zmin=False, x_obs=None, obs_r_list=None):
         # x is a list of (order, 3) np array; uhat is a list of (3, ) np array
         N = len(uhat)
-        P = 2 * np.eye(3 * N)
-        q = -2 * np.hstack(uhat).reshape(3 * N, )
-        assert q.shape == (3 * N,), q.shape
+        P = 2 * np.eye(4 * N)
+        q = -2 * np.hstack(uhat).reshape(4 * N, )
+        assert q.shape == (4 * N,), q.shape
 
         G, h = self._build_ineq_const(x, ignore_pos_zmin=ignore_zmin, x_obs=x_obs, obs_r_list=obs_r_list)
 
@@ -128,8 +136,42 @@ class CBF:
     def get_g12(self):
         return self.A[3, 1], self.A[3, 1]
 
-    def custom_hdots_crazyflie(self, xi,xj,xi_des, xj_des, ui,uj, safety_dist):
-        '''The hdots for the 2nd order system having roll, pitch, yawrate, and thrust as input '''
+    def custom_hdots_second(self, xi, xj, safety_dist, xi_des=np.zeros(9), xj_des=np.zeros(9), i=0, j=1):
+
+        # Get 0-th to {order-1}-th time derivatives for the ECBF constraint given "ellipsoid" super-ellipsoid
+        hdots = [None] * (self.order - 1)
+        A, B = self.getABij(i, j)
+        c = self.zscale
+        xhat = np.vstack((xi, xj)) - np.vstack((xi_des, xj_des))
+        for i in range(self.order - 1):
+            if i == 0:
+                ex, ey, ez = (xi - xj)[-3:]
+                hdots[i] = (ex ** 2 + ey ** 2) ** 2 + (ez / c) ** 4 - safety_dist ** 4
+            elif i == 1:
+                ex, ey, ez = (xi - xj)[-3:]
+                dhde = np.zeros(9)
+                dhde[6] = 4 * ex * (ex ** 2 + ey ** 2)
+                dhde[7] = 4 * ey * (ex ** 2 + ey ** 2)
+                dhde[8] = 4 * ez ** 3 / c ** 4
+                dhdx = np.zeros((1, 18))
+                dhdx[0, :9] = dhde
+                dhdx[0, 9:] = -dhde
+                hdots[i] = (dhdx @ A @ xhat)[0]  # result should be 1x1, so get the value
+        return hdots
+
+    def getABij(self, i, j):
+        Ai = self.A[9 * i:9 * (i + 1), 9 * i:9 * (i + 1)]
+        Aj = self.A[9 * j:9 * (j + 1), 9 * j:9 * (j + 1)]
+        Bi = self.B[9 * i:9 * (i + 1), 4 * i:4 * (i + 1)]
+        Bj = self.B[9 * j:9 * (j + 1), 4 * j:4 * (j + 1)]
+        A = np.zeros((18, 18))
+        B = np.zeros((18, 8))
+        A[:9, :9] = Ai
+        A[9:, 9:] = Aj
+        B[:9, :4] = Bi
+        B[9:, 4:] = Bj
+
+        return A, B
 
     def custom_hdots_omega(self, xi, xj, xi_des, xj_des, ui, uj, safety_dist):
         '''The hdots for the 2nd/3rd order system having angular velocity as input A \in 9x9'''
@@ -204,121 +246,121 @@ class CBF:
                 g1, g2 = self.get_g12()
 
                 hdots[i] = 4 * (c ** 4 * m1 * m2 * (
-                            g1 * uhat1 * (x16 - x7) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) - g1 * uhat2 * (x15 - x6) * (
-                                (x15 - x6) ** 2 + (x16 - x7) ** 2) + g1 * (x0 - xdes0) * (
-                                        4 * (x12 - xdes12) * (x15 - x6) * (x16 - x7) + 2 * (x13 - xdes13) * (
-                                            x16 - x7) ** 2 + (x13 - xdes13) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) + (
-                                                    x13 - xdes13) * ((x15 - x6) ** 2 + 3 * (x16 - x7) ** 2) - 4 * (
-                                                    x15 - x6) * (x16 - x7) * (x3 - xdes3) + 2 * (x16 - x7) ** 2 * (
-                                                    -x4 + xdes4) - (x4 - xdes4) * (
-                                                    (x15 - x6) ** 2 + (x16 - x7) ** 2) - (x4 - xdes4) * (
-                                                    (x15 - x6) ** 2 + 3 * (x16 - x7) ** 2)) - g1 * (x1 - xdes1) * (
-                                        2 * (x12 - xdes12) * (x15 - x6) ** 2 + (x12 - xdes12) * (
-                                            (x15 - x6) ** 2 + (x16 - x7) ** 2) + (x12 - xdes12) * (
-                                                    3 * (x15 - x6) ** 2 + (x16 - x7) ** 2) + 4 * (x13 - xdes13) * (
-                                                    x15 - x6) * (x16 - x7) + 2 * (x15 - x6) ** 2 * (-x3 + xdes3) - 4 * (
-                                                    x15 - x6) * (x16 - x7) * (x4 - xdes4) - (x3 - xdes3) * (
-                                                    (x15 - x6) ** 2 + (x16 - x7) ** 2) - (x3 - xdes3) * (
-                                                    3 * (x15 - x6) ** 2 + (x16 - x7) ** 2)) - g2 * uhat5 * (
-                                        x16 - x7) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) + g2 * uhat6 * (x15 - x6) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) + g2 * (x10 - xdes10) * (
-                                        2 * (x12 - xdes12) * (x15 - x6) ** 2 + (x12 - xdes12) * (
-                                            (x15 - x6) ** 2 + (x16 - x7) ** 2) + (x12 - xdes12) * (
-                                                    3 * (x15 - x6) ** 2 + (x16 - x7) ** 2) + 4 * (x13 - xdes13) * (
-                                                    x15 - x6) * (x16 - x7) + 2 * (x15 - x6) ** 2 * (-x3 + xdes3) - 4 * (
-                                                    x15 - x6) * (x16 - x7) * (x4 - xdes4) - (x3 - xdes3) * (
-                                                    (x15 - x6) ** 2 + (x16 - x7) ** 2) - (x3 - xdes3) * (
-                                                    3 * (x15 - x6) ** 2 + (x16 - x7) ** 2)) - g2 * (x9 - xdes9) * (
-                                        4 * (x12 - xdes12) * (x15 - x6) * (x16 - x7) + 2 * (x13 - xdes13) * (
-                                            x16 - x7) ** 2 + (x13 - xdes13) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) + (
-                                                    x13 - xdes13) * ((x15 - x6) ** 2 + 3 * (x16 - x7) ** 2) - 4 * (
-                                                    x15 - x6) * (x16 - x7) * (x3 - xdes3) + 2 * (x16 - x7) ** 2 * (
-                                                    -x4 + xdes4) - (x4 - xdes4) * (
-                                                    (x15 - x6) ** 2 + (x16 - x7) ** 2) - (x4 - xdes4) * (
-                                                    (x15 - x6) ** 2 + 3 * (x16 - x7) ** 2)) + (x12 - xdes12) * (
-                                        2 * g1 * (x0 - xdes0) * (x15 - x6) * (x16 - x7) - 2 * g1 * (x1 - xdes1) * (
-                                            x15 - x6) ** 2 - g1 * (x1 - xdes1) * (
-                                                    (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * g2 * (x10 - xdes10) * (
-                                                    x15 - x6) ** 2 + g2 * (x10 - xdes10) * (
-                                                    (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * g2 * (x15 - x6) * (
-                                                    x16 - x7) * (x9 - xdes9) + 2 * (x12 - xdes12) * (
-                                                    3 * (x12 - xdes12) * (x15 - x6) + (x13 - xdes13) * (
-                                                        x16 - x7) - 3 * (x15 - x6) * (x3 - xdes3) - (x16 - x7) * (
-                                                                x4 - xdes4)) + 2 * (x13 - xdes13) * (
-                                                    (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (x15 - x6) - (
-                                                        x15 - x6) * (x4 - xdes4) - (x16 - x7) * (x3 - xdes3)) - 2 * (
-                                                    x3 - xdes3) * (3 * (x12 - xdes12) * (x15 - x6) + (x13 - xdes13) * (
-                                            x16 - x7) - 3 * (x15 - x6) * (x3 - xdes3) - (x16 - x7) * (
-                                                                               x4 - xdes4)) - 2 * (x4 - xdes4) * (
-                                                    (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (x15 - x6) - (
-                                                        x15 - x6) * (x4 - xdes4) - (x16 - x7) * (x3 - xdes3))) + (
-                                        x13 - xdes13) * (2 * g1 * (x0 - xdes0) * (x16 - x7) ** 2 + g1 * (x0 - xdes0) * (
-                                (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * g1 * (x1 - xdes1) * (x15 - x6) * (
-                                                                     x16 - x7) + 2 * g2 * (x10 - xdes10) * (
-                                                                     x15 - x6) * (x16 - x7) - 2 * g2 * (
-                                                                     x16 - x7) ** 2 * (x9 - xdes9) - g2 * (
-                                                                     x9 - xdes9) * (
-                                                                     (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * (
-                                                                     x12 - xdes12) * (
-                                                                     (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (
-                                                                         x15 - x6) - (x15 - x6) * (x4 - xdes4) - (
-                                                                                 x16 - x7) * (x3 - xdes3)) + 2 * (
-                                                                     x13 - xdes13) * (
-                                                                     (x12 - xdes12) * (x15 - x6) + 3 * (
-                                                                         x13 - xdes13) * (x16 - x7) - (x15 - x6) * (
-                                                                                 x3 - xdes3) - 3 * (x16 - x7) * (
-                                                                                 x4 - xdes4)) - 2 * (x3 - xdes3) * (
-                                                                     (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (
-                                                                         x15 - x6) - (x15 - x6) * (x4 - xdes4) - (
-                                                                                 x16 - x7) * (x3 - xdes3)) - 2 * (
-                                                                     x4 - xdes4) * ((x12 - xdes12) * (x15 - x6) + 3 * (
-                                x13 - xdes13) * (x16 - x7) - (x15 - x6) * (x3 - xdes3) - 3 * (x16 - x7) * (
-                                                                                                x4 - xdes4))) - (
-                                        x3 - xdes3) * (
-                                        2 * g1 * (x0 - xdes0) * (x15 - x6) * (x16 - x7) - 2 * g1 * (x1 - xdes1) * (
-                                            x15 - x6) ** 2 - g1 * (x1 - xdes1) * (
-                                                    (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * g2 * (x10 - xdes10) * (
-                                                    x15 - x6) ** 2 + g2 * (x10 - xdes10) * (
-                                                    (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * g2 * (x15 - x6) * (
-                                                    x16 - x7) * (x9 - xdes9) + 2 * (x12 - xdes12) * (
-                                                    3 * (x12 - xdes12) * (x15 - x6) + (x13 - xdes13) * (
-                                                        x16 - x7) - 3 * (x15 - x6) * (x3 - xdes3) - (x16 - x7) * (
-                                                                x4 - xdes4)) + 2 * (x13 - xdes13) * (
-                                                    (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (x15 - x6) - (
-                                                        x15 - x6) * (x4 - xdes4) - (x16 - x7) * (x3 - xdes3)) - 2 * (
-                                                    x3 - xdes3) * (3 * (x12 - xdes12) * (x15 - x6) + (x13 - xdes13) * (
-                                            x16 - x7) - 3 * (x15 - x6) * (x3 - xdes3) - (x16 - x7) * (
-                                                                               x4 - xdes4)) - 2 * (x4 - xdes4) * (
-                                                    (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (x15 - x6) - (
-                                                        x15 - x6) * (x4 - xdes4) - (x16 - x7) * (x3 - xdes3))) - (
-                                        x4 - xdes4) * (2 * g1 * (x0 - xdes0) * (x16 - x7) ** 2 + g1 * (x0 - xdes0) * (
-                                (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * g1 * (x1 - xdes1) * (x15 - x6) * (
-                                                                   x16 - x7) + 2 * g2 * (x10 - xdes10) * (x15 - x6) * (
-                                                                   x16 - x7) - 2 * g2 * (x16 - x7) ** 2 * (
-                                                                   x9 - xdes9) - g2 * (x9 - xdes9) * (
-                                                                   (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * (
-                                                                   x12 - xdes12) * (
-                                                                   (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (
-                                                                       x15 - x6) - (x15 - x6) * (x4 - xdes4) - (
-                                                                               x16 - x7) * (x3 - xdes3)) + 2 * (
-                                                                   x13 - xdes13) * (
-                                                                   (x12 - xdes12) * (x15 - x6) + 3 * (x13 - xdes13) * (
-                                                                       x16 - x7) - (x15 - x6) * (x3 - xdes3) - 3 * (
-                                                                               x16 - x7) * (x4 - xdes4)) - 2 * (
-                                                                   x3 - xdes3) * (
-                                                                   (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (
-                                                                       x15 - x6) - (x15 - x6) * (x4 - xdes4) - (
-                                                                               x16 - x7) * (x3 - xdes3)) - 2 * (
-                                                                   x4 - xdes4) * (
-                                                                   (x12 - xdes12) * (x15 - x6) + 3 * (x13 - xdes13) * (
-                                                                       x16 - x7) - (x15 - x6) * (x3 - xdes3) - 3 * (
-                                                                               x16 - x7) * (
-                                                                               x4 - xdes4)))) + 6 * m1 * uhat4 * (
-                                            x17 - x8) ** 2 * (x14 - x5 - xdes14 + xdes5) - 6 * m2 * uhat0 * (
-                                            x17 - x8) ** 2 * (x14 - x5 - xdes14 + xdes5) + 3 * (x17 - x8) * (
-                                            2 * m1 * m2 * (x14 - x5 - xdes14 + xdes5) ** 2 + m1 * uhat4 * (
-                                                x17 - x8) - m2 * uhat0 * (x17 - x8)) * (x14 - x5 - xdes14 + xdes5)) / (
-                                       c ** 4 * m1 * m2)
+                        g1 * uhat1 * (x16 - x7) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) - g1 * uhat2 * (x15 - x6) * (
+                        (x15 - x6) ** 2 + (x16 - x7) ** 2) + g1 * (x0 - xdes0) * (
+                                4 * (x12 - xdes12) * (x15 - x6) * (x16 - x7) + 2 * (x13 - xdes13) * (
+                                x16 - x7) ** 2 + (x13 - xdes13) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) + (
+                                        x13 - xdes13) * ((x15 - x6) ** 2 + 3 * (x16 - x7) ** 2) - 4 * (
+                                        x15 - x6) * (x16 - x7) * (x3 - xdes3) + 2 * (x16 - x7) ** 2 * (
+                                        -x4 + xdes4) - (x4 - xdes4) * (
+                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - (x4 - xdes4) * (
+                                        (x15 - x6) ** 2 + 3 * (x16 - x7) ** 2)) - g1 * (x1 - xdes1) * (
+                                2 * (x12 - xdes12) * (x15 - x6) ** 2 + (x12 - xdes12) * (
+                                (x15 - x6) ** 2 + (x16 - x7) ** 2) + (x12 - xdes12) * (
+                                        3 * (x15 - x6) ** 2 + (x16 - x7) ** 2) + 4 * (x13 - xdes13) * (
+                                        x15 - x6) * (x16 - x7) + 2 * (x15 - x6) ** 2 * (-x3 + xdes3) - 4 * (
+                                        x15 - x6) * (x16 - x7) * (x4 - xdes4) - (x3 - xdes3) * (
+                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - (x3 - xdes3) * (
+                                        3 * (x15 - x6) ** 2 + (x16 - x7) ** 2)) - g2 * uhat5 * (
+                                x16 - x7) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) + g2 * uhat6 * (x15 - x6) * (
+                                (x15 - x6) ** 2 + (x16 - x7) ** 2) + g2 * (x10 - xdes10) * (
+                                2 * (x12 - xdes12) * (x15 - x6) ** 2 + (x12 - xdes12) * (
+                                (x15 - x6) ** 2 + (x16 - x7) ** 2) + (x12 - xdes12) * (
+                                        3 * (x15 - x6) ** 2 + (x16 - x7) ** 2) + 4 * (x13 - xdes13) * (
+                                        x15 - x6) * (x16 - x7) + 2 * (x15 - x6) ** 2 * (-x3 + xdes3) - 4 * (
+                                        x15 - x6) * (x16 - x7) * (x4 - xdes4) - (x3 - xdes3) * (
+                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - (x3 - xdes3) * (
+                                        3 * (x15 - x6) ** 2 + (x16 - x7) ** 2)) - g2 * (x9 - xdes9) * (
+                                4 * (x12 - xdes12) * (x15 - x6) * (x16 - x7) + 2 * (x13 - xdes13) * (
+                                x16 - x7) ** 2 + (x13 - xdes13) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) + (
+                                        x13 - xdes13) * ((x15 - x6) ** 2 + 3 * (x16 - x7) ** 2) - 4 * (
+                                        x15 - x6) * (x16 - x7) * (x3 - xdes3) + 2 * (x16 - x7) ** 2 * (
+                                        -x4 + xdes4) - (x4 - xdes4) * (
+                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - (x4 - xdes4) * (
+                                        (x15 - x6) ** 2 + 3 * (x16 - x7) ** 2)) + (x12 - xdes12) * (
+                                2 * g1 * (x0 - xdes0) * (x15 - x6) * (x16 - x7) - 2 * g1 * (x1 - xdes1) * (
+                                x15 - x6) ** 2 - g1 * (x1 - xdes1) * (
+                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * g2 * (x10 - xdes10) * (
+                                        x15 - x6) ** 2 + g2 * (x10 - xdes10) * (
+                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * g2 * (x15 - x6) * (
+                                        x16 - x7) * (x9 - xdes9) + 2 * (x12 - xdes12) * (
+                                        3 * (x12 - xdes12) * (x15 - x6) + (x13 - xdes13) * (
+                                        x16 - x7) - 3 * (x15 - x6) * (x3 - xdes3) - (x16 - x7) * (
+                                                x4 - xdes4)) + 2 * (x13 - xdes13) * (
+                                        (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (x15 - x6) - (
+                                        x15 - x6) * (x4 - xdes4) - (x16 - x7) * (x3 - xdes3)) - 2 * (
+                                        x3 - xdes3) * (3 * (x12 - xdes12) * (x15 - x6) + (x13 - xdes13) * (
+                                x16 - x7) - 3 * (x15 - x6) * (x3 - xdes3) - (x16 - x7) * (
+                                                               x4 - xdes4)) - 2 * (x4 - xdes4) * (
+                                        (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (x15 - x6) - (
+                                        x15 - x6) * (x4 - xdes4) - (x16 - x7) * (x3 - xdes3))) + (
+                                x13 - xdes13) * (2 * g1 * (x0 - xdes0) * (x16 - x7) ** 2 + g1 * (x0 - xdes0) * (
+                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * g1 * (x1 - xdes1) * (x15 - x6) * (
+                                                         x16 - x7) + 2 * g2 * (x10 - xdes10) * (
+                                                         x15 - x6) * (x16 - x7) - 2 * g2 * (
+                                                         x16 - x7) ** 2 * (x9 - xdes9) - g2 * (
+                                                         x9 - xdes9) * (
+                                                         (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * (
+                                                         x12 - xdes12) * (
+                                                         (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (
+                                                         x15 - x6) - (x15 - x6) * (x4 - xdes4) - (
+                                                                 x16 - x7) * (x3 - xdes3)) + 2 * (
+                                                         x13 - xdes13) * (
+                                                         (x12 - xdes12) * (x15 - x6) + 3 * (
+                                                         x13 - xdes13) * (x16 - x7) - (x15 - x6) * (
+                                                                 x3 - xdes3) - 3 * (x16 - x7) * (
+                                                                 x4 - xdes4)) - 2 * (x3 - xdes3) * (
+                                                         (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (
+                                                         x15 - x6) - (x15 - x6) * (x4 - xdes4) - (
+                                                                 x16 - x7) * (x3 - xdes3)) - 2 * (
+                                                         x4 - xdes4) * ((x12 - xdes12) * (x15 - x6) + 3 * (
+                        x13 - xdes13) * (x16 - x7) - (x15 - x6) * (x3 - xdes3) - 3 * (x16 - x7) * (
+                                                                                x4 - xdes4))) - (
+                                x3 - xdes3) * (
+                                2 * g1 * (x0 - xdes0) * (x15 - x6) * (x16 - x7) - 2 * g1 * (x1 - xdes1) * (
+                                x15 - x6) ** 2 - g1 * (x1 - xdes1) * (
+                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * g2 * (x10 - xdes10) * (
+                                        x15 - x6) ** 2 + g2 * (x10 - xdes10) * (
+                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * g2 * (x15 - x6) * (
+                                        x16 - x7) * (x9 - xdes9) + 2 * (x12 - xdes12) * (
+                                        3 * (x12 - xdes12) * (x15 - x6) + (x13 - xdes13) * (
+                                        x16 - x7) - 3 * (x15 - x6) * (x3 - xdes3) - (x16 - x7) * (
+                                                x4 - xdes4)) + 2 * (x13 - xdes13) * (
+                                        (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (x15 - x6) - (
+                                        x15 - x6) * (x4 - xdes4) - (x16 - x7) * (x3 - xdes3)) - 2 * (
+                                        x3 - xdes3) * (3 * (x12 - xdes12) * (x15 - x6) + (x13 - xdes13) * (
+                                x16 - x7) - 3 * (x15 - x6) * (x3 - xdes3) - (x16 - x7) * (
+                                                               x4 - xdes4)) - 2 * (x4 - xdes4) * (
+                                        (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (x15 - x6) - (
+                                        x15 - x6) * (x4 - xdes4) - (x16 - x7) * (x3 - xdes3))) - (
+                                x4 - xdes4) * (2 * g1 * (x0 - xdes0) * (x16 - x7) ** 2 + g1 * (x0 - xdes0) * (
+                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * g1 * (x1 - xdes1) * (x15 - x6) * (
+                                                       x16 - x7) + 2 * g2 * (x10 - xdes10) * (x15 - x6) * (
+                                                       x16 - x7) - 2 * g2 * (x16 - x7) ** 2 * (
+                                                       x9 - xdes9) - g2 * (x9 - xdes9) * (
+                                                       (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * (
+                                                       x12 - xdes12) * (
+                                                       (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (
+                                                       x15 - x6) - (x15 - x6) * (x4 - xdes4) - (
+                                                               x16 - x7) * (x3 - xdes3)) + 2 * (
+                                                       x13 - xdes13) * (
+                                                       (x12 - xdes12) * (x15 - x6) + 3 * (x13 - xdes13) * (
+                                                       x16 - x7) - (x15 - x6) * (x3 - xdes3) - 3 * (
+                                                               x16 - x7) * (x4 - xdes4)) - 2 * (
+                                                       x3 - xdes3) * (
+                                                       (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (
+                                                       x15 - x6) - (x15 - x6) * (x4 - xdes4) - (
+                                                               x16 - x7) * (x3 - xdes3)) - 2 * (
+                                                       x4 - xdes4) * (
+                                                       (x12 - xdes12) * (x15 - x6) + 3 * (x13 - xdes13) * (
+                                                       x16 - x7) - (x15 - x6) * (x3 - xdes3) - 3 * (
+                                                               x16 - x7) * (
+                                                               x4 - xdes4)))) + 6 * m1 * uhat4 * (
+                                        x17 - x8) ** 2 * (x14 - x5 - xdes14 + xdes5) - 6 * m2 * uhat0 * (
+                                        x17 - x8) ** 2 * (x14 - x5 - xdes14 + xdes5) + 3 * (x17 - x8) * (
+                                        2 * m1 * m2 * (x14 - x5 - xdes14 + xdes5) ** 2 + m1 * uhat4 * (
+                                        x17 - x8) - m2 * uhat0 * (x17 - x8)) * (x14 - x5 - xdes14 + xdes5)) / (
+                                   c ** 4 * m1 * m2)
 
         return hdots
 
@@ -341,6 +383,43 @@ class CBF:
                 x, xd, xdd, xddd = xdots[0], xdots[1], xdots[2], xdots[3]
                 hdots[i] = sum(24 * x * xd ** 3 + 36 * x ** 2 * xd * xdd + 4 * x ** 3 * xddd)
         return hdots
+
+    def custom_control_affine_terms(self, xi, xj, xi_des=np.zeros(9), xj_des=np.zeros(9), i=0, j=1):
+        # Get control affine terms for the ECBF constraint given "circular" super-ellipsoid
+        # L^{order}f and LgL^{order-1}f terms
+        Lfh = 0
+        LgLfh = np.zeros((4,))
+        A, B = self.getABij(i, j)
+        c = self.zscale
+        xhat = np.vstack((xi, xj)) - np.vstack((xi_des, xj_des))
+        if self.order == 2:
+            ex, ey, ez = (xi - xj)[-3:]
+            dhde = np.zeros(9)
+
+            dhde[6] = 4 * ex * (ex ** 2 + ey ** 2)
+            dhde[7] = 4 * ey * (ex ** 2 + ey ** 2)
+            dhde[8] = 4 * ez ** 3 / c ** 4
+            dhdx = np.zeros((1, 18))
+            dhdx[0, :9] = dhde
+            dhdx[0, 9:] = -dhde
+            d2hde2 = np.zeros((9, 9))
+            d2hde2[6, 6] = 12 * ex ** 2 + 4 * ey ** 2
+            d2hde2[6, 7] = 8 * ex * ey
+            d2hde2[7, 6] = 8 * ex * ey
+            d2hde2[7, 7] = 4 * ex ** 2 + 12 * ey ** 2
+            d2hde2[8, 8] = 12 * ez ** 2 / c ** 4
+            d2hdx2 = np.zeros((18, 18))
+            d2hdx2[:9, :9] = d2hde2
+            d2hdx2[9:, 9:] = d2hde2
+            d2hdx2[:9, 9:] = -d2hde2
+            d2hdx2[9:, :9] = -d2hde2
+
+            Axhat = A @ xhat
+            Lfh = dhdx @ A @ Axhat + Axhat.T @ d2hdx2 @ Axhat
+
+            LgLfh = dhdx @ A @ B + Axhat.T @ d2hdx2 @ B
+
+        return Lfh, LgLfh
 
     def _control_affine_terms_rect_ellipsoid(self, xdots):
         # Get control affine terms for the ECBF constraint given "rectangular" super-ellipsoid
@@ -430,23 +509,20 @@ class CBF:
 
     def _build_interagent_const_ij(self, x, i, j):
         """Build Gij and hij for the ECBF constraint"""
-        N = len(x)
+        N = self.num_agents
         xi, xj = x[i], x[j]
-
-        # Derivatives for difference in positions (0~order-1)
-        # Difference in pos, vel, acc, jrk, where z axis is scaled.
-        xdots = [(xi[k] - xj[k]) * np.array([1.0, 1.0, 1.0 / self.zscale]) for k in range(self.order)]
 
         # Compute time derivatives of barrier functions (0~order-1)
         Ds = 2 * self.safety_radius
-        hdots = self._hdots(xdots, Ds)
         # Compute affine term in control input
-        Lfh, LgLfh = self._ctrl_affine(xdots)
+
+        Lfh, LgLfh = self._ctrl_affine(xi=xi, xj=xj, xi_des=self.xdes[i], xj_des=self.xdes[j], i=i, j=j)
+        hdots = self._hdots(xi, xj, safety_dist=Ds, xi_des=self.xdes[i], xj_des=self.xdes[j], i=i, j=j)
 
         # Build ij constraint
-        Gij = np.zeros(3 * N, )
-        Gij[3 * i:3 * (i + 1)] = -LgLfh
-        Gij[3 * j:3 * (j + 1)] = LgLfh
+        Gij = np.zeros(4 * N, )
+        Gij[4 * i:4 * (i + 1)] = -LgLfh
+        Gij[4 * j:4 * (j + 1)] = LgLfh
         hij = np.dot(self.Kcbf, hdots) + Lfh
 
         return Gij, hij
@@ -458,14 +534,14 @@ class CBF:
         # Check if state bound exists TODO: clean up, ensure that both min & max bounds should exist in initialization
         if (self.state_bounds[derivative_order].min_bounds is None) or (
                 self.state_bounds[derivative_order].max_bounds is None):
-            return np.zeros((0, 3 * N)), np.zeros((0))
+            return np.zeros((0, 4 * N)), np.zeros((0))
 
         xi = x[i]
         if ignore_zmin:
-            Gi = np.zeros((5, 3 * N))
+            Gi = np.zeros((5, 4 * N))
             hi = np.zeros((5,))
         else:
-            Gi = np.zeros((6, 3 * N))
+            Gi = np.zeros((6, 4 * N))
             hi = np.zeros((6,))
 
         # Modify default cbf poles based on the derivative ordre of box constraint (e.g., vel box constraint does not depend on position)
@@ -496,6 +572,9 @@ class CBF:
     """Helpers for building inequality constraints for QP"""
 
     def _build_ineq_const(self, x, ignore_pos_zmin, x_obs, obs_r_list):
+        if len(x.shape) == 1:  # stacked x, reshape
+            x = x.reshape(self.xdes.T.shape).T
+
         # --- Some initial checks ---
         # Set common z if xy-only
         if self.xy_only:
@@ -521,8 +600,8 @@ class CBF:
                         2]  # Set a common z as the robots. This should match ground robot's z too
         # ---------------------------
 
-        N = len(x)  # number of agents
-        G = np.zeros((0, 3 * N))  # place holder
+        N = self.num_agents
+        G = np.zeros((0, 4 * N))  # place holder
         h = np.zeros((0,))  # place holder
 
         # inter-agent collision avoidance
@@ -560,7 +639,7 @@ class CBF:
         N_obs = len(x_obs)
         N_const = N_obs * N
 
-        G = np.zeros((N_const, 3 * N))
+        G = np.zeros((N_const, 4 * N))
         h = np.zeros((N_const))
 
         for i, xi in enumerate(x):
@@ -579,16 +658,50 @@ class CBF:
 
         return G, h
 
+    def custom_build_obstacles_const(self, x, x_obs, obs_r_list):
+        N = self.num_agents
+
+        N_obs = len(x_obs)
+        N_const = N_obs * N
+
+        G = np.zeros((N_const, 4 * N))
+        h = np.zeros((N_const))
+
+        for i, xi in enumerate(x):
+            for j, (xj, obs_r) in enumerate(zip(x_obs, obs_r_list)):
+                Ds_obs = (self.safety_radius + obs_r)
+                xj_obs = np.zeros(9)
+                xj_obs[-3:] = xj  # position of obstacle is the only part of its state.
+                # we pass xj_des to be the same as xj so that Aj @ (xj-xj_des) = Aj @ 0 = 0 for all Aj to represent there is
+                # no motion of the obstacle.
+                Lfh, LgLfh = self._ctrl_affine(xi=xi, xj=xj_obs, xi_des=self.xdes[i], xj_des=xj_obs, i=i, j=j)
+                hdots = self._hdots(xi, xj_obs, safety_dist=Ds_obs, xi_des=self.xdes[i], xj_des=xj_obs, i=i, j=j)
+
+                # Build ij constraint
+                G[i * N_obs + j, 3 * i:3 * (i + 1)] = -LgLfh
+                h[i * N_obs + j] = np.dot(self.Kcbf,
+                                          hdots) + Lfh  # No additional term since obstacles are not controlled at the {order}-th derivative (e.g. order=4 for snap control)
+
+        return G, h
+
     def _build_umax_const(self, N):
         # max infinity norm of control input constraint
-        G = np.vstack((np.eye(3 * N), -np.eye(3 * N)))
-        h = self.umax * np.ones(2 * 3 * N)
+        if len(np.array(self.umax)) > 1:
+            G = np.vstack((np.eye(4 * N), -np.eye(4 * N)))
+            h = np.zeros(2 * 4 * N)
+            for i in range(2*N):
+                h[4*i:4*(i+1)] = np.array(self.umax)
+            #tile umax constraint.
+        else:
+            G = np.vstack((np.eye(4 * N), -np.eye(4 * N)))
+            h = self.umax * np.ones(2 * 4 * N)
+
         return G, h
 
     def _build_state_bound_const(self, x, ignore_pos_zmin):
         # box constraint for states (including room bounds) for each agent i
         N = len(x)
-        G = np.zeros((0, 3 * N))  # place holder
+        G = np.zeros((0, 4 * N))  # place holder
         h = np.zeros((0,))  # place holder
         for i in range(N):
             for j in range(self.order):
@@ -638,3 +751,42 @@ class CBF:
             # rospy.logerr("Failed to set safety_dist with error message: {}".format(str(e)))
             pass
         return success
+
+
+class DroneCBF(CBF):
+    """
+    Wrapper Around CBF class where we can accept an environment + model and prepopulate most of the CBF args.
+    """
+
+    def __init__(self, env, lin_models, zscale=2.0, safety_radius=1, cbf_poles=np.array([-2.2, -2.4]),
+                 room_bounds=None,
+                 vmax=None,
+                 amax=None,
+                 jmax=None,
+                 omega_max=np.ones(3)
+                 ):
+
+        A = None
+        B = None
+        self.num_agents = len(lin_models)
+        self.cbf_poles = cbf_poles
+        super().__init__(xy_only=False, zscale=zscale, order=2,
+                       umax=[env.max_thrust, omega_max[0], omega_max[1], omega_max[2]],
+                       safety_radius=safety_radius, cbf_poles=cbf_poles, room_bounds= room_bounds,
+                       vmax=vmax, amax=amax, jmax=jmax, A=A, B=B, num_agents=self.num_agents)
+
+
+        # For now we set all the bounds to zero because I believe we will need to change their indexing for the drone
+        # state.
+
+
+        # def __init__(self, xy_only, zscale=2.0, order=3, umax=1e4, safety_radius=1.0,
+        #              cbf_poles=np.array([-2.2, -2.4, -2.6]),
+        #              room_bounds=np.array([-4.25, 4.5, -3.5, 4.25, 1.0, 2.0]),
+        #              vmax=2,
+        #              amax=3,
+        #              jmax=4,
+        #              A=None,
+        #              B=None,
+        #              num_agents=1):
+        #
