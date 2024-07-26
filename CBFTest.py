@@ -8,13 +8,14 @@ from gym_pybullet_drones.envs.BaseAviary import DroneModel, Physics
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.utils.utils import sync, str2bool
 from scipy.spatial.transform import Rotation
-
+from obstacles import *
 import utils
 import utils.model_conversions as conversions
 # Pybullet drone environment
 from control import GeometricControl, LQROmegaController, DecentralizedLQROmega, ThrustOmegaController
 from model import LinearizedOmegaModel
 from trajectories import *
+from cbf import DroneQPTracker, DroneCBF
 from utils import obs_to_lin_model
 
 DEFAULT_DRONES = DroneModel("cf2p")
@@ -262,7 +263,7 @@ class GeometricEnv:
             steps += 1
         return steps
 
-    def do_control(self, trajs=None, render=False, computed_K=None, use_noisy_model=True):
+    def do_control(self, trajs=None, qpTracker=None, render=False, computed_K=None, use_noisy_model=True, x_obs_list=None, obs_r_list=None):
         env = self.env
         args = self.args
         # for information about collecting a dataset using similar code, see https://github.com/altwaitan/DL4IO/blob/main/examples/pybullet/data_collection.py
@@ -291,6 +292,7 @@ class GeometricEnv:
         # Run the simulation
         START = time.time()
         action = np.zeros((args.num_drones, 4))
+        nominal_us = np.zeros((args.num_drones, 4))
         obs, _, _, _, _ = env.step(action)
         CTRL_STEPS = int(args.duration_sec * env.CTRL_FREQ)
         t = 0
@@ -311,16 +313,36 @@ class GeometricEnv:
                                                       desired_omega=0)
 
                 if args.controller != 'dlqr':
-                    action[j, :], u = ctrl[j].compute(obs[j])
-
+                    action[j, :], u = ctrl[j].compute(obs[j], skip_low_level=qpTracker is not None)
+                    nominal_us[j, :] = u
             # Apply the control input
             if args.controller == 'dlqr':
-                action, u = ctrl[0].compute(obs)
+                action, u = ctrl[0].compute(obs, skip_low_level=qpTracker is not None)
+                nominal_us = u
+
 
             # p.applyExternalForce(env.DRONE_IDS[0],
             #                      -1,  # -1 for the base, 0-3 for the motors
             #                      forceObj=[.001, 0, 0],  # a force vector
             #                      posObj=[0, 0, 0], flags=p.WORLD_FRAME, physicsClientId=PYB_CLIENT)
+
+            if qpTracker is not None:
+                #nominal_us stores the nominal control from whichever base controller is used, we must:
+                # 1. offset these by hover force to give uhat
+                # 2. modify the control input to satisfy the CBF and constraints using qpTracker
+                # 3. add back the hover force
+                # 4. use the low level controller to compute the action
+
+                nominal_us[:, 0] = nominal_us[:, 0] - env.M * env.G
+                xdes = np.zeros((args.num_drones, 9))
+                for j in range(args.num_drones):
+                    pos, vel, acc, yaw, omega = trajs[j](t)
+                    xdes[j] = np.hstack([0, 0, yaw, vel, pos])
+
+                u_safe = qpTracker.compute_control(obs, xdes, nominal_us, x_obs=x_obs_list, obs_r_list=obs_r_list)
+                u_safe[:, 0] = u_safe[:, 0] + env.M * env.G
+                for j in range(args.num_drones):
+                    action[j, :] = ctrl[j].compute_low_level(u_safe[j, :], obs[j], j)
 
             obs, _, _, _, _ = env.step(action)
             self.obs = obs
@@ -378,12 +400,30 @@ class GeometricEnv:
             self.TARGET_RPYS[i, 1] = 0
             self.TARGET_RPYS[i, 2] = np.pi / 2
 
+def add_env_obstacles(env, x_obs_list, obs_r_list):
+    for i in range(len(x_obs_list)):
+
+        urdf_file = generate_sphere(obs_r_list[i])
+        obs_center = x_obs_list[i][0]
+        p.loadURDF(urdf_file, obs_center, useFixedBase=True)
 
 if __name__ == "__main__":
     ARGS = parse_args()
     geo = GeometricEnv(ARGS, circle_init=True)
     env = geo.create_env()
     # trajs = [WaitTrajectory(duration=20, position=geo.TARGET_POSITIONS[j]) for j in range(ARGS.num_drones)]
+    trajs = [Lemniscate(center=np.array([0, 0, 0.25 + .25*_]), omega=0.5, yaw_rate=0) for _ in range(ARGS.num_drones)]
+    droneCBF = DroneCBF(env, geo.linear_models, safety_radius=0.1, zscale=1)
+    droneTracker = DroneQPTracker(droneCBF, num_robots=ARGS.num_drones)
+    x_obs_list = np.array([
+        np.array([[0, 0, .5], np.zeros(3)]),
+    ])
+    obs_r_list = [.1, ]
+    add_env_obstacles(env, x_obs_list, obs_r_list)
+    geo.do_control(trajs=trajs, qpTracker=droneTracker, render=False, computed_K=None, use_noisy_model=False,
+                   x_obs_list=x_obs_list, obs_r_list=obs_r_list)
+    exit()
+
     # # trajs = [Lemniscate(center=np.array([0, 0, .5]), omega=1.5, yaw_rate=0) for _ in range(ARGS.num_drones)]
     # geo.do_control(trajs=trajs, render=False)
     # np.save("observations_omega.npy", geo.observations)

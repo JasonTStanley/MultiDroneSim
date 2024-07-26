@@ -60,48 +60,50 @@ class CBF:
 
         self._hdots = self.custom_hdots_second
         self._ctrl_affine = self.custom_control_affine_terms
-
-        assert len(
-            room_bounds) == 6, "Require xmin, xmax, ymin, ymax, zmin, zmax (6 values), but len(room_bounds)={}".format(
-            len(room_bounds))
-        xmin, xmax, ymin, ymax, zmin, zmax = room_bounds
-        self.min_room_bounds = np.array([xmin, ymin, zmin])
-        self.max_room_bounds = np.array([xmax, ymax, zmax])
-        assert (
-                self.min_room_bounds < self.max_room_bounds).all(), "Not all min_room_bounds values are less than max_room_bounds. Current room_bounds={}".format(
-            room_bounds)
-        assert self.order >= 1 and self.order <= 4, "Only support relative degree between 1 (vel-controlled) and 4 (snp-controlled) system."
-        assert len(cbf_poles) == self.order, "Number of specified CBF poles ({})does not match order ({})".format(
-            len(self.cbf_poles), self.order)
-
-        # Also get the bounds for vel, acc, jrk, TODO: load and consolidate with _build_box_const function
-        self.vmax = vmax
-        self.amax = amax
-        self.jmax = jmax
-
         self.state_bounds = [StateBound(None, None) for _ in range(self.order)]
-        for i in range(self.order):
-            if i == 0:  # Position bounds
-                self.state_bounds[i] = StateBound(min_bounds=np.array([xmin, ymin, zmin]),
-                                                  max_bounds=np.array([xmax, ymax, zmax]))
-            elif (i == 1) and (self.vmax is not None):  # Velocity bounds
-                self.state_bounds[i] = StateBound(min_bounds=np.array([-self.vmax] * 3),
-                                                  max_bounds=np.array([self.vmax] * 3))
-            elif (i == 2) and (self.amax is not None):  # Acceleration bounds
-                self.state_bounds[i] = StateBound(min_bounds=np.array([-self.amax] * 3),
-                                                  max_bounds=np.array([self.amax] * 3))
-            elif (i == 3) and (self.jmax is not None):  # Jerk bounds
-                self.state_bounds[i] = StateBound(min_bounds=np.array([-self.jmax] * 3),
-                                                  max_bounds=np.array([self.jmax] * 3))
+        if room_bounds is not None:
+            assert len(room_bounds) == 6, "Require xmin, xmax, ymin, ymax, zmin, zmax (6 values), but len(room_bounds)={}".format(
+                len(room_bounds))
+            xmin, xmax, ymin, ymax, zmin, zmax = room_bounds
+            self.min_room_bounds = np.array([xmin, ymin, zmin])
+            self.max_room_bounds = np.array([xmax, ymax, zmax])
+            assert (
+                    self.min_room_bounds < self.max_room_bounds).all(), "Not all min_room_bounds values are less than max_room_bounds. Current room_bounds={}".format(
+                room_bounds)
+            assert self.order >= 1 and self.order <= 4, "Only support relative degree between 1 (vel-controlled) and 4 (snp-controlled) system."
+            assert len(cbf_poles) == self.order, "Number of specified CBF poles ({})does not match order ({})".format(
+                len(self.cbf_poles), self.order)
 
-        if A is not None and B is not None:
-            # Generate feedback gain for the integrator system
-            self.A = np.zeros((self.order, self.order))
-            for i in range(self.order - 1):
-                self.A[i, i + 1] = 1.0
-            self.B = np.zeros((self.order, 1))
-            self.B[-1, 0] = 1.0
-        self.Kcbf = np.asarray(signal.place_poles(self.A, self.B, cbf_poles).gain_matrix)
+            # Also get the bounds for vel, acc, jrk, TODO: load and consolidate with _build_box_const function
+            self.vmax = vmax
+            self.amax = amax
+            self.jmax = jmax
+
+            for i in range(self.order):
+                if i == 0:  # Position bounds
+                    self.state_bounds[i] = StateBound(min_bounds=np.array([xmin, ymin, zmin]),
+                                                      max_bounds=np.array([xmax, ymax, zmax]))
+                elif (i == 1) and (self.vmax is not None):  # Velocity bounds
+                    self.state_bounds[i] = StateBound(min_bounds=np.array([-self.vmax] * 3),
+                                                      max_bounds=np.array([self.vmax] * 3))
+                elif (i == 2) and (self.amax is not None):  # Acceleration bounds
+                    self.state_bounds[i] = StateBound(min_bounds=np.array([-self.amax] * 3),
+                                                      max_bounds=np.array([self.amax] * 3))
+                elif (i == 3) and (self.jmax is not None):  # Jerk bounds
+                    self.state_bounds[i] = StateBound(min_bounds=np.array([-self.jmax] * 3),
+                                                      max_bounds=np.array([self.jmax] * 3))
+
+        self.A = A
+        self.B = B
+
+
+        # Generate feedback gain for the integrator system
+        self.F = np.zeros((self.order, self.order))
+        for i in range(self.order - 1):
+            self.F[i, i + 1] = 1.0
+        self.G = np.zeros((self.order, 1))
+        self.G[-1, 0] = 1.0
+        self.Kcbf = np.asarray(signal.place_poles(self.F, self.G, cbf_poles).gain_matrix)
 
     def set_xdes(self, xdes):
         if xdes.shape != self.xdes.shape:
@@ -139,11 +141,11 @@ class CBF:
     def custom_hdots_second(self, xi, xj, safety_dist, xi_des=np.zeros(9), xj_des=np.zeros(9), i=0, j=1):
 
         # Get 0-th to {order-1}-th time derivatives for the ECBF constraint given "ellipsoid" super-ellipsoid
-        hdots = [None] * (self.order - 1)
+        hdots = [None] * (self.order)
         A, B = self.getABij(i, j)
         c = self.zscale
-        xhat = np.vstack((xi, xj)) - np.vstack((xi_des, xj_des))
-        for i in range(self.order - 1):
+        xhat = np.hstack((xi, xj)) - np.hstack((xi_des, xj_des))
+        for i in range(self.order):
             if i == 0:
                 ex, ey, ez = (xi - xj)[-3:]
                 hdots[i] = (ex ** 2 + ey ** 2) ** 2 + (ez / c) ** 4 - safety_dist ** 4
@@ -173,225 +175,16 @@ class CBF:
 
         return A, B
 
-    def custom_hdots_omega(self, xi, xj, xi_des, xj_des, ui, uj, safety_dist):
-        '''The hdots for the 2nd/3rd order system having angular velocity as input A \in 9x9'''
-        # Get 0-th to {order-1}-th time derivatives for the ECBF constraint given "circular" super-ellipsoid
-        hdots = [None] * self.order
-        A = self.A
-        B = self.B
-        c = self.zscale
-        for i in range(self.order):
-            if i == 0:
-                x, y, z = (xi - xj)[-3:]  # last 3 is always position -> [xi-xj, yi-yj, (zi-zj)]
-                hdots[i] = (x ** 2 + y ** 2) ** 2 + (z / c) ** 4 - safety_dist ** 4
-
-            elif i == 1:
-                [x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17] = np.vstack((xi, xj))
-                [xdes0, xdes1, xdes2, xdes3, xdes4, xdes5, xdes6, xdes7, xdes8, xdes9, xdes10, xdes11, xdes12, xdes13,
-                 xdes14, xdes15, xdes16, xdes17] = np.vstack((xi_des, xj_des))
-
-                hdots[i] = 4 * (x12 - xdes12) * (x15 - x6) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) + 4 * (
-                        x13 - xdes13) * (
-                                   x16 - x7) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) - 4 * (x15 - x6) * (x3 - xdes3) * (
-                                   (x15 - x6) ** 2 + (x16 - x7) ** 2) - 4 * (x16 - x7) * (x4 - xdes4) * (
-                                   (x15 - x6) ** 2 + (x16 - x7) ** 2) + 4 * (x14 - xdes14) * (
-                                   x17 - x8) ** 3 / c ** 4 - 4 * (
-                                   x17 - x8) ** 3 * (x5 - xdes5) / c ** 4
-
-
-            elif i == 2:
-                [x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17] = np.vstack((xi, xj))
-                [xdes0, xdes1, xdes2, xdes3, xdes4, xdes5, xdes6, xdes7, xdes8, xdes9, xdes10, xdes11, xdes12, xdes13,
-                 xdes14, xdes15, xdes16, xdes17] = np.vstack((xi_des, xj_des))
-                [uhat0, uhat1, uhat2, uhat3, uhat4, uhat5, uhat6, uhat7] = np.vstack([ui, uj])
-                m1, m2 = self.get_m12()
-                g1, g2 = self.get_g12()
-
-                hdots[i] = 4 * (c ** 4 * m1 * m2 * (
-                        g1 * (x0 - xdes0) * (x16 - x7) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) - g1 * (x1 - xdes1) * (
-                        x15 - x6) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) + g2 * (x10 - xdes10) * (x15 - x6) * (
-                                (x15 - x6) ** 2 + (x16 - x7) ** 2) - g2 * (x16 - x7) * (x9 - xdes9) * (
-                                (x15 - x6) ** 2 + (x16 - x7) ** 2) + (x12 - xdes12) * (
-                                2 * (x12 - xdes12) * (x15 - x6) ** 2 + (x12 - xdes12) * (
-                                (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * (x13 - xdes13) * (x15 - x6) * (
-                                        x16 - x7) + 2 * (x15 - x6) ** 2 * (-x3 + xdes3) - 2 * (x15 - x6) * (
-                                        x16 - x7) * (x4 - xdes4) - (x3 - xdes3) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2)) + (x13 - xdes13) * (
-                                2 * (x12 - xdes12) * (x15 - x6) * (x16 - x7) + 2 * (x13 - xdes13) * (
-                                x16 - x7) ** 2 + (x13 - xdes13) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * (x15 - x6) * (x16 - x7) * (
-                                        x3 - xdes3) + 2 * (x16 - x7) ** 2 * (-x4 + xdes4) - (x4 - xdes4) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2)) - (x3 - xdes3) * (
-                                2 * (x12 - xdes12) * (x15 - x6) ** 2 + (x12 - xdes12) * (
-                                (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * (x13 - xdes13) * (x15 - x6) * (
-                                        x16 - x7) + 2 * (x15 - x6) ** 2 * (-x3 + xdes3) - 2 * (x15 - x6) * (
-                                        x16 - x7) * (x4 - xdes4) - (x3 - xdes3) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2)) - (x4 - xdes4) * (
-                                2 * (x12 - xdes12) * (x15 - x6) * (x16 - x7) + 2 * (x13 - xdes13) * (
-                                x16 - x7) ** 2 + (x13 - xdes13) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * (x15 - x6) * (x16 - x7) * (
-                                        x3 - xdes3) + 2 * (x16 - x7) ** 2 * (-x4 + xdes4) - (x4 - xdes4) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2))) + 3 * m1 * m2 * (
-                                        x17 - x8) ** 2 * (x14 - x5 - xdes14 + xdes5) ** 2 + m1 * uhat4 * (
-                                        x17 - x8) ** 3 - m2 * uhat0 * (x17 - x8) ** 3) / (c ** 4 * m1 * m2)
-
-
-
-            elif i == 3:
-                [x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17] = np.vstack((xi, xj))
-                [xdes0, xdes1, xdes2, xdes3, xdes4, xdes5, xdes6, xdes7, xdes8, xdes9, xdes10, xdes11, xdes12, xdes13,
-                 xdes14, xdes15, xdes16, xdes17] = np.vstack((xi_des, xj_des))
-                [uhat0, uhat1, uhat2, uhat3, uhat4, uhat5, uhat6, uhat7] = np.vstack([ui, uj])
-                m1, m2 = self.get_m12()
-                g1, g2 = self.get_g12()
-
-                hdots[i] = 4 * (c ** 4 * m1 * m2 * (
-                        g1 * uhat1 * (x16 - x7) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) - g1 * uhat2 * (x15 - x6) * (
-                        (x15 - x6) ** 2 + (x16 - x7) ** 2) + g1 * (x0 - xdes0) * (
-                                4 * (x12 - xdes12) * (x15 - x6) * (x16 - x7) + 2 * (x13 - xdes13) * (
-                                x16 - x7) ** 2 + (x13 - xdes13) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) + (
-                                        x13 - xdes13) * ((x15 - x6) ** 2 + 3 * (x16 - x7) ** 2) - 4 * (
-                                        x15 - x6) * (x16 - x7) * (x3 - xdes3) + 2 * (x16 - x7) ** 2 * (
-                                        -x4 + xdes4) - (x4 - xdes4) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - (x4 - xdes4) * (
-                                        (x15 - x6) ** 2 + 3 * (x16 - x7) ** 2)) - g1 * (x1 - xdes1) * (
-                                2 * (x12 - xdes12) * (x15 - x6) ** 2 + (x12 - xdes12) * (
-                                (x15 - x6) ** 2 + (x16 - x7) ** 2) + (x12 - xdes12) * (
-                                        3 * (x15 - x6) ** 2 + (x16 - x7) ** 2) + 4 * (x13 - xdes13) * (
-                                        x15 - x6) * (x16 - x7) + 2 * (x15 - x6) ** 2 * (-x3 + xdes3) - 4 * (
-                                        x15 - x6) * (x16 - x7) * (x4 - xdes4) - (x3 - xdes3) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - (x3 - xdes3) * (
-                                        3 * (x15 - x6) ** 2 + (x16 - x7) ** 2)) - g2 * uhat5 * (
-                                x16 - x7) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) + g2 * uhat6 * (x15 - x6) * (
-                                (x15 - x6) ** 2 + (x16 - x7) ** 2) + g2 * (x10 - xdes10) * (
-                                2 * (x12 - xdes12) * (x15 - x6) ** 2 + (x12 - xdes12) * (
-                                (x15 - x6) ** 2 + (x16 - x7) ** 2) + (x12 - xdes12) * (
-                                        3 * (x15 - x6) ** 2 + (x16 - x7) ** 2) + 4 * (x13 - xdes13) * (
-                                        x15 - x6) * (x16 - x7) + 2 * (x15 - x6) ** 2 * (-x3 + xdes3) - 4 * (
-                                        x15 - x6) * (x16 - x7) * (x4 - xdes4) - (x3 - xdes3) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - (x3 - xdes3) * (
-                                        3 * (x15 - x6) ** 2 + (x16 - x7) ** 2)) - g2 * (x9 - xdes9) * (
-                                4 * (x12 - xdes12) * (x15 - x6) * (x16 - x7) + 2 * (x13 - xdes13) * (
-                                x16 - x7) ** 2 + (x13 - xdes13) * ((x15 - x6) ** 2 + (x16 - x7) ** 2) + (
-                                        x13 - xdes13) * ((x15 - x6) ** 2 + 3 * (x16 - x7) ** 2) - 4 * (
-                                        x15 - x6) * (x16 - x7) * (x3 - xdes3) + 2 * (x16 - x7) ** 2 * (
-                                        -x4 + xdes4) - (x4 - xdes4) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - (x4 - xdes4) * (
-                                        (x15 - x6) ** 2 + 3 * (x16 - x7) ** 2)) + (x12 - xdes12) * (
-                                2 * g1 * (x0 - xdes0) * (x15 - x6) * (x16 - x7) - 2 * g1 * (x1 - xdes1) * (
-                                x15 - x6) ** 2 - g1 * (x1 - xdes1) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * g2 * (x10 - xdes10) * (
-                                        x15 - x6) ** 2 + g2 * (x10 - xdes10) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * g2 * (x15 - x6) * (
-                                        x16 - x7) * (x9 - xdes9) + 2 * (x12 - xdes12) * (
-                                        3 * (x12 - xdes12) * (x15 - x6) + (x13 - xdes13) * (
-                                        x16 - x7) - 3 * (x15 - x6) * (x3 - xdes3) - (x16 - x7) * (
-                                                x4 - xdes4)) + 2 * (x13 - xdes13) * (
-                                        (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (x15 - x6) - (
-                                        x15 - x6) * (x4 - xdes4) - (x16 - x7) * (x3 - xdes3)) - 2 * (
-                                        x3 - xdes3) * (3 * (x12 - xdes12) * (x15 - x6) + (x13 - xdes13) * (
-                                x16 - x7) - 3 * (x15 - x6) * (x3 - xdes3) - (x16 - x7) * (
-                                                               x4 - xdes4)) - 2 * (x4 - xdes4) * (
-                                        (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (x15 - x6) - (
-                                        x15 - x6) * (x4 - xdes4) - (x16 - x7) * (x3 - xdes3))) + (
-                                x13 - xdes13) * (2 * g1 * (x0 - xdes0) * (x16 - x7) ** 2 + g1 * (x0 - xdes0) * (
-                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * g1 * (x1 - xdes1) * (x15 - x6) * (
-                                                         x16 - x7) + 2 * g2 * (x10 - xdes10) * (
-                                                         x15 - x6) * (x16 - x7) - 2 * g2 * (
-                                                         x16 - x7) ** 2 * (x9 - xdes9) - g2 * (
-                                                         x9 - xdes9) * (
-                                                         (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * (
-                                                         x12 - xdes12) * (
-                                                         (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (
-                                                         x15 - x6) - (x15 - x6) * (x4 - xdes4) - (
-                                                                 x16 - x7) * (x3 - xdes3)) + 2 * (
-                                                         x13 - xdes13) * (
-                                                         (x12 - xdes12) * (x15 - x6) + 3 * (
-                                                         x13 - xdes13) * (x16 - x7) - (x15 - x6) * (
-                                                                 x3 - xdes3) - 3 * (x16 - x7) * (
-                                                                 x4 - xdes4)) - 2 * (x3 - xdes3) * (
-                                                         (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (
-                                                         x15 - x6) - (x15 - x6) * (x4 - xdes4) - (
-                                                                 x16 - x7) * (x3 - xdes3)) - 2 * (
-                                                         x4 - xdes4) * ((x12 - xdes12) * (x15 - x6) + 3 * (
-                        x13 - xdes13) * (x16 - x7) - (x15 - x6) * (x3 - xdes3) - 3 * (x16 - x7) * (
-                                                                                x4 - xdes4))) - (
-                                x3 - xdes3) * (
-                                2 * g1 * (x0 - xdes0) * (x15 - x6) * (x16 - x7) - 2 * g1 * (x1 - xdes1) * (
-                                x15 - x6) ** 2 - g1 * (x1 - xdes1) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * g2 * (x10 - xdes10) * (
-                                        x15 - x6) ** 2 + g2 * (x10 - xdes10) * (
-                                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * g2 * (x15 - x6) * (
-                                        x16 - x7) * (x9 - xdes9) + 2 * (x12 - xdes12) * (
-                                        3 * (x12 - xdes12) * (x15 - x6) + (x13 - xdes13) * (
-                                        x16 - x7) - 3 * (x15 - x6) * (x3 - xdes3) - (x16 - x7) * (
-                                                x4 - xdes4)) + 2 * (x13 - xdes13) * (
-                                        (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (x15 - x6) - (
-                                        x15 - x6) * (x4 - xdes4) - (x16 - x7) * (x3 - xdes3)) - 2 * (
-                                        x3 - xdes3) * (3 * (x12 - xdes12) * (x15 - x6) + (x13 - xdes13) * (
-                                x16 - x7) - 3 * (x15 - x6) * (x3 - xdes3) - (x16 - x7) * (
-                                                               x4 - xdes4)) - 2 * (x4 - xdes4) * (
-                                        (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (x15 - x6) - (
-                                        x15 - x6) * (x4 - xdes4) - (x16 - x7) * (x3 - xdes3))) - (
-                                x4 - xdes4) * (2 * g1 * (x0 - xdes0) * (x16 - x7) ** 2 + g1 * (x0 - xdes0) * (
-                        (x15 - x6) ** 2 + (x16 - x7) ** 2) - 2 * g1 * (x1 - xdes1) * (x15 - x6) * (
-                                                       x16 - x7) + 2 * g2 * (x10 - xdes10) * (x15 - x6) * (
-                                                       x16 - x7) - 2 * g2 * (x16 - x7) ** 2 * (
-                                                       x9 - xdes9) - g2 * (x9 - xdes9) * (
-                                                       (x15 - x6) ** 2 + (x16 - x7) ** 2) + 2 * (
-                                                       x12 - xdes12) * (
-                                                       (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (
-                                                       x15 - x6) - (x15 - x6) * (x4 - xdes4) - (
-                                                               x16 - x7) * (x3 - xdes3)) + 2 * (
-                                                       x13 - xdes13) * (
-                                                       (x12 - xdes12) * (x15 - x6) + 3 * (x13 - xdes13) * (
-                                                       x16 - x7) - (x15 - x6) * (x3 - xdes3) - 3 * (
-                                                               x16 - x7) * (x4 - xdes4)) - 2 * (
-                                                       x3 - xdes3) * (
-                                                       (x12 - xdes12) * (x16 - x7) + (x13 - xdes13) * (
-                                                       x15 - x6) - (x15 - x6) * (x4 - xdes4) - (
-                                                               x16 - x7) * (x3 - xdes3)) - 2 * (
-                                                       x4 - xdes4) * (
-                                                       (x12 - xdes12) * (x15 - x6) + 3 * (x13 - xdes13) * (
-                                                       x16 - x7) - (x15 - x6) * (x3 - xdes3) - 3 * (
-                                                               x16 - x7) * (
-                                                               x4 - xdes4)))) + 6 * m1 * uhat4 * (
-                                        x17 - x8) ** 2 * (x14 - x5 - xdes14 + xdes5) - 6 * m2 * uhat0 * (
-                                        x17 - x8) ** 2 * (x14 - x5 - xdes14 + xdes5) + 3 * (x17 - x8) * (
-                                        2 * m1 * m2 * (x14 - x5 - xdes14 + xdes5) ** 2 + m1 * uhat4 * (
-                                        x17 - x8) - m2 * uhat0 * (x17 - x8)) * (x14 - x5 - xdes14 + xdes5)) / (
-                                   c ** 4 * m1 * m2)
-
-        return hdots
-
-    def _hdots_rect_ellipsoid(self, xdots, safety_dist):
-        """Helpers for computing CBF values based on the shape of safety cage (e.g., rectangle-like or circle-like cylinders)"""
-        # Get 0-th to {order-1}-th time derivatives for the ECBF constraint given "rectangular" super-ellipsoid
-        assert len(xdots) >= 1 and len(xdots) <= 4
-        hdots = [None] * len(xdots)
-        for i in range(len(xdots)):
-            if i == 0:
-                x = xdots[0]
-                hdots[i] = sum(x ** 4) - safety_dist ** 4
-            elif i == 1:
-                x, xd = xdots[0], xdots[1]
-                hdots[i] = sum(4 * x ** 3 * xd)
-            elif i == 2:
-                x, xd, xdd = xdots[0], xdots[1], xdots[2]
-                hdots[i] = sum(12 * x ** 2 * xd ** 2 + 4 * x ** 3 * xdd)
-            elif i == 3:
-                x, xd, xdd, xddd = xdots[0], xdots[1], xdots[2], xdots[3]
-                hdots[i] = sum(24 * x * xd ** 3 + 36 * x ** 2 * xd * xdd + 4 * x ** 3 * xddd)
-        return hdots
-
     def custom_control_affine_terms(self, xi, xj, xi_des=np.zeros(9), xj_des=np.zeros(9), i=0, j=1):
         # Get control affine terms for the ECBF constraint given "circular" super-ellipsoid
         # L^{order}f and LgL^{order-1}f terms
+
+        # TODO we can save compute by only computing the LgLfh for the first input, and the second is always the negative
         Lfh = 0
         LgLfh = np.zeros((4,))
         A, B = self.getABij(i, j)
         c = self.zscale
-        xhat = np.vstack((xi, xj)) - np.vstack((xi_des, xj_des))
+        xhat = np.hstack((xi, xj)) - np.hstack((xi_des, xj_des))
         if self.order == 2:
             ex, ey, ez = (xi - xj)[-3:]
             dhde = np.zeros(9)
@@ -421,92 +214,6 @@ class CBF:
 
         return Lfh, LgLfh
 
-    def _control_affine_terms_rect_ellipsoid(self, xdots):
-        # Get control affine terms for the ECBF constraint given "rectangular" super-ellipsoid
-        # L^{order}f and LgL^{order-1}f terms
-        assert len(xdots) >= 1 and len(xdots) <= 4
-        x = xdots[0]  # shape: (3,)
-        Lfh = 0
-        LgLfh = 4 * x ** 3 * np.array([1.0, 1.0, 1.0 / self.zscale])  # shape: (3,)
-
-        if self.order == 1:
-            Lfh = 0
-        elif self.order == 2:
-            xd = xdots[1]
-            Lfh = sum(12 * x ** 2 * xd ** 2)
-        elif self.order == 3:
-            xd, xdd = xdots[1], xdots[2]
-            Lfh = sum(24 * x * xd ** 3 + 36 * x ** 2 * xd * xdd)
-        elif self.order == 4:
-            xd, xdd, xddd = xdots[1], xdots[2], xdots[3]
-            Lfh = sum(24 * xd ** 4 + 144 * x * xd ** 2 * xdd + 36 * x ** 2 * xdd ** 2 + 48 * x ** 2 * xd * xddd)
-
-        return Lfh, LgLfh
-
-    def _hdots_circ_ellipsoid(self, xdots, safety_dist):
-        # Get 0-th to {order-1}-th time derivatives for the ECBF constraint given "circular" super-ellipsoid
-        assert len(xdots) >= 1 and len(xdots) <= 4
-        hdots = [None] * len(xdots)
-        for i in range(len(xdots)):
-            if i == 0:
-                x, y, z = xdots[0]  # [xi-xj, yi-yj, (zi-zj)/zscale]
-                hdots[i] = (x ** 2 + y ** 2) ** 2 + z ** 4 - safety_dist ** 4
-            elif i == 1:
-                x, y, z = xdots[0]
-                xd, yd, zd = xdots[1]
-                hdots[i] = 4 * (x ** 2 + y ** 2) * (x * xd + y * yd) + 4 * z ** 3 * zd
-            elif i == 2:
-                x, y, z = xdots[0]
-                xd, yd, zd = xdots[1]
-                xdd, ydd, zdd = xdots[2]
-                hdots[i] = 8 * (x * xd + y * yd) ** 2 + 4 * (x ** 2 + y ** 2) * (
-                        xd ** 2 + yd ** 2 + x * xdd + y * ydd) + \
-                           12 * z ** 2 * zd ** 2 + 4 * z ** 3 * zdd
-            elif i == 3:
-                x, y, z = xdots[0]
-                xd, yd, zd = xdots[1]
-                xdd, ydd, zdd = xdots[2]
-                xddd, yddd, zddd = xdots[3]
-                hdots[i] = 24 * (x * xd + y * yd) * (xd ** 2 + yd ** 2 + x * xdd + y * ydd) + \
-                           4 * (x ** 2 + y ** 2) * (3 * xd * xdd + 3 * yd * ydd + x * xddd + y * yddd) + \
-                           24 * z * zd ** 3 + 36 * z ** 2 * zd * zdd + 4 * z ** 3 * zddd
-        return hdots
-
-    def _control_affine_terms_circ_ellipsoid(self, xdots):
-        # Get control affine terms for the ECBF constraint given "rectangular" super-ellipsoid
-        # L^{order}f and LgL^{order-1}f terms
-        assert len(xdots) >= 1 and len(xdots) <= 4
-        x, y, z = xdots[0]
-        Lfh = 0
-        LgLfh = np.zeros((3,))
-        LgLfh[0] = 4 * (x ** 2 + y ** 2) * x
-        LgLfh[1] = 4 * (x ** 2 + y ** 2) * y
-        LgLfh[2] = 4 * z ** 3 / self.zscale
-
-        if self.order == 1:
-            Lfh = 0
-
-        elif self.order == 2:
-            xd, yd, zd = xdots[1]
-            Lfh = 8 * (x * xd + y * yd) ** 2 + 4 * (x ** 2 + y ** 2) * (xd ** 2 + yd ** 2) + 12 * z ** 2 * zd ** 2
-
-        elif self.order == 3:
-            xd, yd, zd = xdots[1]
-            xdd, ydd, zdd = xdots[2]
-            Lfh = 24 * (x * xd + y * yd) * (xd ** 2 + yd ** 2 + x * xdd + y * ydd) + 4 * (x ** 2 + y ** 2) * (
-                    3 * xd * xdd + 3 * yd * ydd) + 24 * z * zd ** 3 + 36 * z ** 2 * zd * zdd
-
-        elif self.order == 4:
-            xd, yd, zd = xdots[1]
-            xdd, ydd, zdd = xdots[2]
-            xddd, yddd, zddd = xdots[3]
-            Lfh = 24 * (xd ** 2 + yd ** 2 + x * xdd + y * ydd) ** 2 + 32 * (x * xd + y * yd) * (
-                    3 * xd * xdd + 3 * yd * ydd + x * xddd + y * yddd) + \
-                  4 * (x ** 2 + y ** 2) * (3 * xdd ** 2 + 3 * ydd ** 2 + 4 * xd * xddd + 4 * yd * yddd) + \
-                  24 * zd ** 4 + 144 * z * zd ** 2 * zdd + 36 * z ** 2 * zdd ** 2 + 48 * z ** 2 * zd * zddd
-
-        return Lfh, LgLfh
-
     def _build_interagent_const_ij(self, x, i, j):
         """Build Gij and hij for the ECBF constraint"""
         N = self.num_agents
@@ -521,15 +228,15 @@ class CBF:
 
         # Build ij constraint
         Gij = np.zeros(4 * N, )
-        Gij[4 * i:4 * (i + 1)] = -LgLfh
-        Gij[4 * j:4 * (j + 1)] = LgLfh
+        Gij[4 * i:4 * (i + 1)] = -LgLfh[:, :4]
+        Gij[4 * j:4 * (j + 1)] = LgLfh[:, :4]
         hij = np.dot(self.Kcbf, hdots) + Lfh
 
         return Gij, hij
 
     def _build_box_const(self, x, i, ignore_zmin=False, derivative_order=0):
         """Box constraint for agent i"""
-        N = len(x)
+        N = self.num_agents
 
         # Check if state bound exists TODO: clean up, ensure that both min & max bounds should exist in initialization
         if (self.state_bounds[derivative_order].min_bounds is None) or (
@@ -549,16 +256,16 @@ class CBF:
         Kcbf_local[0, :derivative_order] = 0
 
         # Upper bounds
-        Gi[0:3, 3 * i:3 * i + 3] = np.eye(3)
+        Gi[0:4, 4 * i:4 * i + 4] = np.eye(4)
         xi_max = np.zeros((self.order, 3))
         xi_max[derivative_order] = self.state_bounds[derivative_order].max_bounds  # xi_max[0] = self.max_room_bounds
         hi[:3] = np.dot(Kcbf_local, xi_max - xi)
 
         # Lower bounds
-        Gi[3, 3 * i] = -1
-        Gi[4, 3 * i + 1] = -1
+        Gi[4, 4 * i] = -1
+        Gi[4, 4 * i + 1] = -1
         if not ignore_zmin:
-            Gi[5, 3 * i + 2] = -1
+            Gi[5, 4 * i + 2] = -1
 
         xi_min = np.zeros((self.order, 3))
         xi_min[derivative_order] = self.state_bounds[derivative_order].min_bounds  # xi_min[0] = self.min_room_bounds
@@ -624,7 +331,8 @@ class CBF:
 
         # Avoiding other non-controlled static/dynamic obstacles
         if (x_obs is not None) and (obs_r_list is not None):
-            G_obs, h_obs = self._build_obstacles_const(x, x_obs, obs_r_list)
+            G_obs, h_obs = self.custom_build_obstacles_const(x, x_obs, obs_r_list)
+            # G_obs, h_obs = self._build_obstacles_const(x, x_obs, obs_r_list)
             G = np.vstack((G, G_obs))
             h = np.hstack((h, h_obs))
 
@@ -653,6 +361,7 @@ class CBF:
 
                 # Build ij constraint
                 G[i * N_obs + j, 3 * i:3 * (i + 1)] = -LgLfh
+
                 h[i * N_obs + j] = np.dot(self.Kcbf,
                                           hdots) + Lfh  # No additional term since obstacles are not controlled at the {order}-th derivative (e.g. order=4 for snap control)
 
@@ -671,16 +380,18 @@ class CBF:
             for j, (xj, obs_r) in enumerate(zip(x_obs, obs_r_list)):
                 Ds_obs = (self.safety_radius + obs_r)
                 xj_obs = np.zeros(9)
-                xj_obs[-3:] = xj  # position of obstacle is the only part of its state.
+                xj_obs[-3:] = xj[0]  # position of obstacle is the only part of its state. TODO understand the shape of x_obs and remove this [0]
                 # we pass xj_des to be the same as xj so that Aj @ (xj-xj_des) = Aj @ 0 = 0 for all Aj to represent there is
                 # no motion of the obstacle.
                 Lfh, LgLfh = self._ctrl_affine(xi=xi, xj=xj_obs, xi_des=self.xdes[i], xj_des=xj_obs, i=i, j=j)
-                hdots = self._hdots(xi, xj_obs, safety_dist=Ds_obs, xi_des=self.xdes[i], xj_des=xj_obs, i=i, j=j)
+                #here the LgLfh is computed for both inputs stacked, we only need it for the first so we can drop the rest
+                #TODO see custom_control_affine_terms for details on how to speed up
 
+                hdots = self._hdots(xi, xj_obs, safety_dist=Ds_obs, xi_des=self.xdes[i], xj_des=xj_obs, i=i, j=j)
                 # Build ij constraint
-                G[i * N_obs + j, 3 * i:3 * (i + 1)] = -LgLfh
-                h[i * N_obs + j] = np.dot(self.Kcbf,
-                                          hdots) + Lfh  # No additional term since obstacles are not controlled at the {order}-th derivative (e.g. order=4 for snap control)
+                G[i * N_obs + j, 4 * i:4 * (i + 1)] = -LgLfh[:, :4]
+                h[i * N_obs + j] = np.dot(self.Kcbf, hdots) + Lfh
+                # No additional term since obstacles are not controlled at the {order}-th derivative (e.g. order=4 for snap control)
 
         return G, h
 
@@ -689,9 +400,9 @@ class CBF:
         if len(np.array(self.umax)) > 1:
             G = np.vstack((np.eye(4 * N), -np.eye(4 * N)))
             h = np.zeros(2 * 4 * N)
-            for i in range(2*N):
-                h[4*i:4*(i+1)] = np.array(self.umax)
-            #tile umax constraint.
+            for i in range(2 * N):
+                h[4 * i:4 * (i + 1)] = np.array(self.umax)
+            # tile umax constraint.
         else:
             G = np.vstack((np.eye(4 * N), -np.eye(4 * N)))
             h = self.umax * np.ones(2 * 4 * N)
@@ -758,35 +469,28 @@ class DroneCBF(CBF):
     Wrapper Around CBF class where we can accept an environment + model and prepopulate most of the CBF args.
     """
 
-    def __init__(self, env, lin_models, zscale=2.0, safety_radius=1, cbf_poles=np.array([-2.2, -2.4]),
+    def __init__(self, env, lin_models,
+                 zscale=2.0,
+                 safety_radius=1,
+                 cbf_poles=np.array([-2.2, -2.4]),
                  room_bounds=None,
                  vmax=None,
                  amax=None,
                  jmax=None,
                  omega_max=np.ones(3)
                  ):
-
-        A = None
-        B = None
-        self.num_agents = len(lin_models)
-        self.cbf_poles = cbf_poles
-        super().__init__(xy_only=False, zscale=zscale, order=2,
-                       umax=[env.max_thrust, omega_max[0], omega_max[1], omega_max[2]],
-                       safety_radius=safety_radius, cbf_poles=cbf_poles, room_bounds= room_bounds,
-                       vmax=vmax, amax=amax, jmax=jmax, A=A, B=B, num_agents=self.num_agents)
-
-
         # For now we set all the bounds to zero because I believe we will need to change their indexing for the drone
         # state.
+        self.num_agents = len(lin_models)
+        A = np.zeros((9*self.num_agents, 9*self.num_agents))
+        B = np.zeros((9*self.num_agents, 4*self.num_agents))
+        for i, model in enumerate(lin_models):
+            A[9*i:9*(i+1), 9*i:9*(i+1)] = model.A
+            B[9*i:9*(i+1), 4*i:4*(i+1)] = model.B
+        super().__init__(xy_only=False, zscale=zscale, order=2,
+                         umax=np.array([env.MAX_THRUST, omega_max[0], omega_max[1], omega_max[2]]),
+                         safety_radius=safety_radius, cbf_poles=cbf_poles, room_bounds=room_bounds,
+                         vmax=vmax, amax=amax, jmax=jmax, A=A, B=B, num_agents=self.num_agents)
 
-
-        # def __init__(self, xy_only, zscale=2.0, order=3, umax=1e4, safety_radius=1.0,
-        #              cbf_poles=np.array([-2.2, -2.4, -2.6]),
-        #              room_bounds=np.array([-4.25, 4.5, -3.5, 4.25, 1.0, 2.0]),
-        #              vmax=2,
-        #              amax=3,
-        #              jmax=4,
-        #              A=None,
-        #              B=None,
-        #              num_agents=1):
-        #
+        self.lin_models = lin_models
+        self.env = env

@@ -7,6 +7,6 @@ class BaseController:
         '''Set the desired trajectory for the controller'''
         pass
 
-    def compute(self, obs):
+    def compute(self, obs, skip_low_level=False):
         '''Given an observation in the environment, compute the control action'''
         pass

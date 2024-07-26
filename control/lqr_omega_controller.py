@@ -2,7 +2,7 @@ import numpy as np
 import scipy.linalg as la
 from scipy.spatial.transform import Rotation
 
-from control.ThrustOmegaController import ThrustOmegaController
+from control.low_level.thrust_omega_ctrl import ThrustOmegaController
 from control.base_controller import BaseController
 from model.linear_omega import LinearizedOmegaModel
 from utils.model_conversions import obs_to_lin_model
@@ -75,7 +75,7 @@ class LQROmegaController(BaseController):
         arr_out[2] = -R[0, 1]
         return arr_out
 
-    def compute_low_level(self, obs, u):
+    def compute_low_level(self, u, obs, idx=0):
         cur_quat = obs[3:7]
         cur_ang_vel_w = obs[13:16]
         R = Rotation.from_quat(cur_quat).as_matrix()
@@ -87,7 +87,7 @@ class LQROmegaController(BaseController):
 
         return action
 
-    def compute(self, obs):
+    def compute(self, obs, skip_low_level=False):
         x = obs_to_lin_model(obs, dim=9)
         # drop angular velocity from the state
 
@@ -107,6 +107,13 @@ class LQROmegaController(BaseController):
 
         u = -self.K @ e
         u[0] += u[0] + self.env.M * self.env.G  # offset by the equilibirum force
-        action = self.compute_low_level(obs, u)
+        if skip_low_level:
+            return None, self.cap_u(u)
+        action = self.compute_low_level(u,obs)
         # action = input_to_action(self.env, u)
-        return action, u
+        return action, self.cap_u(u)
+
+    def cap_u(self, u):
+        #using the min thrust based on min crazyflie rpm and max thrust
+        u[0] = np.clip(u[0], 4*(9440.3**2 * self.env.KF), self.env.MAX_THRUST)
+        return u

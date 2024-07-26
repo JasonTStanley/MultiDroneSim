@@ -80,7 +80,7 @@ class LQRController(BaseController):
         arr_out[2] = -R[0, 1]
         return arr_out
 
-    def compute(self, obs):
+    def compute(self, obs, skip_low_level=False):
         x = obs_to_lin_model(obs)
         e = np.copy(x)
 

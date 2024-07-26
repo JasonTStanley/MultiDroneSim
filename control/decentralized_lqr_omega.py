@@ -194,7 +194,7 @@ class DecentralizedLQROmega(BaseController):
         self.desired_yaws[robot_idx] = desired_yaw
         self.desired_omegas[robot_idx] = desired_omega
 
-    def compute(self, obs):
+    def compute(self, obs, skip_low_level=False):
         m = self.m
         n = self.n
         es = [self.error_state(obs_to_lin_model(obs[i], dim=9),
@@ -208,8 +208,17 @@ class DecentralizedLQROmega(BaseController):
         u_robot = np.array([u[(n * i):(n * (i + 1))] for i in range(self.num_robots)])
         # offset by the equilibrium thrust
         u_robot[:, 0] += self.env.M * self.env.G
+        if skip_low_level:
+            #Return empty action, let the caller compute the low level control
+            return None, self.cap_u(u_robot)
+
         action = np.array([self.compute_low_level(u, obs[idx], idx) for idx,u in enumerate(u_robot)])
-        return action, u
+        return action, self.cap_u(u_robot)
+
+    def cap_u(self, u):
+        #using the min thrust based on min crazyflie rpm and max thrust
+        u[:, 0] = np.clip(u[:, 0], 4*(9440.3**2 * self.env.KF), self.env.MAX_THRUST)
+        return u
 
     def compute_low_level(self, u, obs, robot_idx):
         ctrl = self.low_level_controllers[robot_idx]

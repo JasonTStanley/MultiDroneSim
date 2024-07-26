@@ -2,7 +2,6 @@ import numpy as np
 import scipy.linalg as la
 from scipy.spatial.transform import Rotation
 
-from control.ThrustOmegaController import ThrustOmegaController
 from control.base_controller import BaseController
 from model.linear_crazyflie import CrazyflieModel
 from utils.model_conversions import obs_to_lin_model

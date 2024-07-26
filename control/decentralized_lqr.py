@@ -253,7 +253,7 @@ class DecentralizedLQR(BaseController):
         Ahat[9:, 6:9] = np.eye(3)
         self.theta = np.hstack([Ahat, Bhat]).T
 
-    def compute(self, obs):
+    def compute(self, obs, skip_low_level=False):
         es = [self.error_state(obs_to_lin_model(obs[i]),
                                np.hstack([np.array([0, 0, self.desired_yaws[i]]),
                                           np.array([0, 0, self.desired_omegas[i]]), self.desired_vels[i],

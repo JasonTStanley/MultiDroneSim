@@ -87,7 +87,7 @@ def input_to_action(env, u):
     #ensure motor thrusts are positive
     #consider setting min thrust to something like .005*env.M*env.G
     #min rpm from DSLPID for crazyflie is 9440.3 -> 9440.3^2 * env.KF = min thrust
-    motor_thrusts = np.clip(motor_thrusts, 9440.3**2 * env.KF, None)
+    motor_thrusts = np.clip(motor_thrusts, 9440.3**2 * env.KF, env.MAX_THRUST)
     #if motor thrusts are negative, move to minimum value
     rpms = np.sqrt(motor_thrusts / env.KF)
     action = rpms

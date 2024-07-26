@@ -5,19 +5,23 @@ from control import base_controller
 from cbf import CBF
 
 from cvxopt import matrix, solvers
+from utils.model_conversions import obs_to_lin_model
 # solvers.options['solver'] = 'mosek'
 solvers.options['show_progress'] = False
 # solvers.options['feastol'] = 1e-9 # default:1e-7
 
 class DroneQPTracker(object):
-    def __init__(self, controller: base_controller, cbf, order=2):
-        self.controller = controller
+    def __init__(self, cbf, order=2, num_robots=1):
         self.cbf = cbf
         self.order = order
+        self.num_robots = num_robots
         self.qp_tracker = QPTracker(cbf=cbf, order=order)
 
-    def compute_control(self, x, xdes, u_nominal, ignore_zmin=False, x_obs=None, obs_r_list=None):
+    def compute_control(self, obs, xdes, u_nominal, ignore_zmin=False, x_obs=None, obs_r_list=None):
         # Compute control using QPTracker
+        x = np.zeros((self.num_robots, 9))
+        for i in range(self.num_robots):
+            x[i] = obs_to_lin_model(obs[i], dim=9)
 
         self.qp_tracker.cbf.set_xdes(xdes)
         success, u = self.qp_tracker.solve_fun(x, u_nominal, ignore_zmin=ignore_zmin, x_obs=x_obs, obs_r_list=obs_r_list)
@@ -58,9 +62,9 @@ class QPTracker(object):
         self.solve_fun = self._get_solve_fun(cbf, weighted_penalty=weighted_penalty)
 
 
-    def _get_solve_fun(self, cbf, lqr, clf, weighted_penalty):
+    def _get_solve_fun(self, cbf, lqr=None, weighted_penalty=False):
         # Return the appropriate method to use given input arguments
-        if (cbf is not None) and (lqr is None) and (clf is None):
+        if (cbf is not None) and (lqr is None):
             return self._rectify  # ECBF-QP given user-provied nominal control
 
         elif (cbf is not None) and (lqr is not None): # and (clf is None):
@@ -74,7 +78,7 @@ class QPTracker(object):
 
         else:
             # TODO: do so cleanly
-            assert False, "No solver can be found given cbf={}, lqr={}, clf={}".format(cbf, lqr, clf)
+            assert False, "No solver can be found given cbf={}, lqr={}, clf={}".format(cbf, lqr)
 
 
     def _rectify(self, x, uhat, ignore_zmin=False, x_obs=None, obs_r_list=None, weights=None):
@@ -82,12 +86,12 @@ class QPTracker(object):
         N = len(uhat)
 
         if weights is None:
-            P = np.eye(3*N)
-            q = -np.hstack(uhat).reshape(3*N,)
+            P = np.eye(4*N)
+            q = -np.hstack(uhat).reshape(4*N,)
         else:
-            P = np.eye(3*N)
+            P = np.eye(4*N)
             for i, W in enumerate(weights):
-                P[i*3:(i+1)*3, i*3:(i+1)*3] = W
+                P[i*4:(i+1)*4, i*4:(i+1)*4] = W
 
             uhat_weighted = [-uh.dot(W) for uh, W in zip(uhat, weights)]
             q = np.hstack(uhat_weighted).reshape((-1,))
@@ -99,7 +103,7 @@ class QPTracker(object):
         try:
             sol = solvers.qp(matrix(P), matrix(q), matrix(G), matrix(h))  # without equality constraint
             u = np.asarray(sol['x'])
-            u = [np.asarray(u[i*self.dim:(i+1)*self.dim]) for i in range(N)]
+            u = np.asarray([u[i*4:(i+1)*4] for i in range(N)]).squeeze()
             success = True
 
         except Exception as e:
