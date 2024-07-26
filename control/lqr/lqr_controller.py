@@ -108,6 +108,6 @@ class LQRController(BaseController):
         #
 
         u = -self.K @ e
-        u[0] += u[0] + self.env.M * self.env.G # offset by the equilibirum force
+        u[0] = u[0] + self.env.M * self.env.G # offset by the equilibirum force
         action = input_to_action(self.env, u)
         return action, u

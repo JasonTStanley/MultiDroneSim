@@ -47,6 +47,7 @@ class CBF:
                  A=None,
                  B=None,
                  num_agents=1):
+        self.xdim = A.shape[0] // num_agents  # state dimension
         self.zscale = zscale  # scale in z safety distance in super-ellipsoid
         self.order = order  # relative degree of output position w.r.t control input (jerk input: 3; snap input: 4)
         self.umax = umax  # maximum input magnitude
@@ -55,14 +56,15 @@ class CBF:
         self.xy_only = xy_only  # Whether ignore all z components for ground vehicles
         self.dim = 3  # !!Only handles 3D data
         self.num_agents = num_agents
-        self.xdes = np.zeros((num_agents, 9))
+        self.xdes = np.zeros((num_agents, self.xdim))
         # Set methods to get the {order}-th derivative of the barrier function for inter-agent collision avoidance
 
-        self._hdots = self.custom_hdots_second
+        self._hdots = self.custom_hdots
         self._ctrl_affine = self.custom_control_affine_terms
         self.state_bounds = [StateBound(None, None) for _ in range(self.order)]
         if room_bounds is not None:
-            assert len(room_bounds) == 6, "Require xmin, xmax, ymin, ymax, zmin, zmax (6 values), but len(room_bounds)={}".format(
+            assert len(
+                room_bounds) == 6, "Require xmin, xmax, ymin, ymax, zmin, zmax (6 values), but len(room_bounds)={}".format(
                 len(room_bounds))
             xmin, xmax, ymin, ymax, zmin, zmax = room_bounds
             self.min_room_bounds = np.array([xmin, ymin, zmin])
@@ -95,7 +97,6 @@ class CBF:
 
         self.A = A
         self.B = B
-
 
         # Generate feedback gain for the integrator system
         self.F = np.zeros((self.order, self.order))
@@ -138,44 +139,74 @@ class CBF:
     def get_g12(self):
         return self.A[3, 1], self.A[3, 1]
 
-    def custom_hdots_second(self, xi, xj, safety_dist, xi_des=np.zeros(9), xj_des=np.zeros(9), i=0, j=1):
+    # def custom_hdots(self, xi, xj, safety_dist, xi_des, xj_des, i=0, j=1):
+    #     if self.order == 2:
+    #         return self.custom_hdots_second(xi, xj, safety_dist, xi_des, xj_des, i, j)
+    #     elif self.order == 3:
+    #         return self.custom_hdots_3rd(xi, xj, safety_dist, xi_des, xj_des, i, j)
+    #     else:
+    #         raise ValueError("Only support relative degree between 2 (thrust) and 3 (yank) system")
 
+    def custom_hdots(self, xi, xj, safety_dist, xi_des, xj_des, i=0, j=1):
         # Get 0-th to {order-1}-th time derivatives for the ECBF constraint given "ellipsoid" super-ellipsoid
         hdots = [None] * (self.order)
         A, B = self.getABij(i, j)
         c = self.zscale
         xhat = np.hstack((xi, xj)) - np.hstack((xi_des, xj_des))
+
+        ex, ey, ez = (xi - xj)[-3:]
         for i in range(self.order):
             if i == 0:
-                ex, ey, ez = (xi - xj)[-3:]
                 hdots[i] = (ex ** 2 + ey ** 2) ** 2 + (ez / c) ** 4 - safety_dist ** 4
             elif i == 1:
-                ex, ey, ez = (xi - xj)[-3:]
-                dhde = np.zeros(9)
+                dhde = np.zeros(self.xdim)
+                dhde[-3] = 4 * ex * (ex ** 2 + ey ** 2)
+                dhde[-2] = 4 * ey * (ex ** 2 + ey ** 2)
+                dhde[-1] = 4 * ez ** 3 / c ** 4
+                dhdx = np.zeros((1, 2 * self.xdim))
+                dhdx[0, :self.xdim] = dhde
+                dhdx[0, self.xdim:] = -dhde
+                hdots[i] = (dhdx @ A @ xhat)[0]  # result should be 1x1, so get the value
+            elif i == 2:
+                dhde = np.zeros(self.xdim)
+
                 dhde[6] = 4 * ex * (ex ** 2 + ey ** 2)
                 dhde[7] = 4 * ey * (ex ** 2 + ey ** 2)
                 dhde[8] = 4 * ez ** 3 / c ** 4
-                dhdx = np.zeros((1, 18))
-                dhdx[0, :9] = dhde
-                dhdx[0, 9:] = -dhde
-                hdots[i] = (dhdx @ A @ xhat)[0]  # result should be 1x1, so get the value
+                dhdx = np.zeros((1, 2 * self.xdim))
+                dhdx[0, :self.xdim] = dhde
+                dhdx[0, self.xdim:] = -dhde
+                d2hde2 = np.zeros((self.xdim, self.xdim))
+                d2hde2[6, 6] = 12 * ex ** 2 + 4 * ey ** 2
+                d2hde2[6, 7] = 8 * ex * ey
+                d2hde2[7, 6] = 8 * ex * ey
+                d2hde2[7, 7] = 4 * ex ** 2 + 12 * ey ** 2
+                d2hde2[8, 8] = 12 * ez ** 2 / c ** 4
+                d2hdx2 = np.zeros((2 * self.xdim, 2 * self.xdim))
+                d2hdx2[:self.xdim, :self.xdim] = d2hde2
+                d2hdx2[self.xdim:, self.xdim:] = d2hde2
+                d2hdx2[:self.xdim, self.xdim:] = -d2hde2
+                d2hdx2[self.xdim:, :self.xdim] = -d2hde2
+                Axhat = A @ xhat
+                Lfh = dhdx @ A @ Axhat + Axhat.T @ d2hdx2 @ Axhat
+                hdots[i] = Lfh[0]
         return hdots
 
     def getABij(self, i, j):
-        Ai = self.A[9 * i:9 * (i + 1), 9 * i:9 * (i + 1)]
-        Aj = self.A[9 * j:9 * (j + 1), 9 * j:9 * (j + 1)]
-        Bi = self.B[9 * i:9 * (i + 1), 4 * i:4 * (i + 1)]
-        Bj = self.B[9 * j:9 * (j + 1), 4 * j:4 * (j + 1)]
-        A = np.zeros((18, 18))
-        B = np.zeros((18, 8))
-        A[:9, :9] = Ai
-        A[9:, 9:] = Aj
-        B[:9, :4] = Bi
-        B[9:, 4:] = Bj
+        Ai = self.A[self.xdim * i:self.xdim * (i + 1), self.xdim * i:self.xdim * (i + 1)]
+        Aj = self.A[self.xdim * j:self.xdim * (j + 1), self.xdim * j:self.xdim * (j + 1)]
+        Bi = self.B[self.xdim * i:self.xdim * (i + 1), 4 * i:4 * (i + 1)]
+        Bj = self.B[self.xdim * j:self.xdim * (j + 1), 4 * j:4 * (j + 1)]
+        A = np.zeros((2 * self.xdim, 2 * self.xdim))
+        B = np.zeros((2 * self.xdim, 8))
+        A[:self.xdim, :self.xdim] = Ai
+        A[self.xdim:, self.xdim:] = Aj
+        B[:self.xdim, :4] = Bi
+        B[self.xdim:, 4:] = Bj
 
         return A, B
 
-    def custom_control_affine_terms(self, xi, xj, xi_des=np.zeros(9), xj_des=np.zeros(9), i=0, j=1):
+    def custom_control_affine_terms(self, xi, xj, xi_des, xj_des, i=0, j=1):
         # Get control affine terms for the ECBF constraint given "circular" super-ellipsoid
         # L^{order}f and LgL^{order-1}f terms
 
@@ -185,32 +216,84 @@ class CBF:
         A, B = self.getABij(i, j)
         c = self.zscale
         xhat = np.hstack((xi, xj)) - np.hstack((xi_des, xj_des))
-        if self.order == 2:
-            ex, ey, ez = (xi - xj)[-3:]
-            dhde = np.zeros(9)
 
-            dhde[6] = 4 * ex * (ex ** 2 + ey ** 2)
-            dhde[7] = 4 * ey * (ex ** 2 + ey ** 2)
-            dhde[8] = 4 * ez ** 3 / c ** 4
-            dhdx = np.zeros((1, 18))
-            dhdx[0, :9] = dhde
-            dhdx[0, 9:] = -dhde
-            d2hde2 = np.zeros((9, 9))
-            d2hde2[6, 6] = 12 * ex ** 2 + 4 * ey ** 2
-            d2hde2[6, 7] = 8 * ex * ey
-            d2hde2[7, 6] = 8 * ex * ey
-            d2hde2[7, 7] = 4 * ex ** 2 + 12 * ey ** 2
-            d2hde2[8, 8] = 12 * ez ** 2 / c ** 4
-            d2hdx2 = np.zeros((18, 18))
-            d2hdx2[:9, :9] = d2hde2
-            d2hdx2[9:, 9:] = d2hde2
-            d2hdx2[:9, 9:] = -d2hde2
-            d2hdx2[9:, :9] = -d2hde2
+        ex, ey, ez = (xi - xj)[-3:]
+        if self.order == 2:
+            dhde = np.zeros(self.xdim)
+
+            dhde[-3] = 4 * ex * (ex ** 2 + ey ** 2)
+            dhde[-2] = 4 * ey * (ex ** 2 + ey ** 2)
+            dhde[-1] = 4 * ez ** 3 / c ** 4
+            dhdx = np.zeros((1, 2 * self.xdim))
+            dhdx[0, :self.xdim] = dhde
+            dhdx[0, self.xdim:] = -dhde
+            d2hde2 = np.zeros((self.xdim, self.xdim))
+            d2hde2[-3, -3] = 12 * ex ** 2 + 4 * ey ** 2
+            d2hde2[-3, -2] = 8 * ex * ey
+            d2hde2[-2, -3] = 8 * ex * ey
+            d2hde2[-2, -2] = 4 * ex ** 2 + 12 * ey ** 2
+            d2hde2[-1, -1] = 12 * ez ** 2 / c ** 4
+            d2hdx2 = np.zeros((2 * self.xdim, 2 * self.xdim))
+            d2hdx2[:self.xdim, :self.xdim] = d2hde2
+            d2hdx2[self.xdim:, self.xdim:] = d2hde2
+            d2hdx2[:self.xdim, self.xdim:] = -d2hde2
+            d2hdx2[self.xdim:, :self.xdim] = -d2hde2
 
             Axhat = A @ xhat
             Lfh = dhdx @ A @ Axhat + Axhat.T @ d2hdx2 @ Axhat
 
             LgLfh = dhdx @ A @ B + Axhat.T @ d2hdx2 @ B
+        elif self.order == 3:
+            dhde = np.zeros(self.xdim)
+
+            dhde[-3] = 4 * ex * (ex ** 2 + ey ** 2)
+            dhde[-2] = 4 * ey * (ex ** 2 + ey ** 2)
+            dhde[-1] = 4 * ez ** 3 / c ** 4
+            dhdx = np.zeros((1, 2 * self.xdim))
+            dhdx[0, :self.xdim] = dhde
+            dhdx[0, self.xdim:] = -dhde
+            d2hde2 = np.zeros((self.xdim, self.xdim))
+            d2hde2[-3, -3] = 12 * ex ** 2 + 4 * ey ** 2
+            d2hde2[-3, -2] = 8 * ex * ey
+            d2hde2[-2, -3] = 8 * ex * ey
+            d2hde2[-2, -2] = 4 * ex ** 2 + 12 * ey ** 2
+            d2hde2[-1, -1] = 12 * ez ** 2 / c ** 4
+            d2hdx2 = np.zeros((2 * self.xdim, 2 * self.xdim))
+            d2hdx2[:self.xdim, :self.xdim] = d2hde2
+            d2hdx2[self.xdim:, self.xdim:] = d2hde2
+            d2hdx2[:self.xdim, self.xdim:] = -d2hde2
+            d2hdx2[self.xdim:, :self.xdim] = -d2hde2
+
+            d3hde3 = np.zeros((self.xdim, self.xdim, self.xdim))
+            #im writing this with, depth, row, column
+            d3hde3[-3, -3, -3] = 24 * ex
+            d3hde3[-3, -3, -2] = 8 * ey
+            d3hde3[-3, -2, -3] = 8 * ey
+            d3hde3[-3, -2, -2] = 8 * ex
+
+            d3hde3[-2, -2, -2] = 24 * ey
+            d3hde3[-2, -3, -3] = 8 * ey
+            d3hde3[-2, -3, -2] = 8 * ex
+            d3hde3[-2, -2, -3] = 8 * ex
+            d3hde3[-1, -1, -1] = 24 * ez / c ** 4
+
+            d3hdx3 = np.zeros((2 * self.xdim, 2 * self.xdim, 2*self.xdim))
+            d3hdx3[:self.xdim, :self.xdim, :self.xdim] = d3hde3
+            d3hdx3[:self.xdim, self.xdim:, self.xdim:] = d3hde3
+            d3hdx3[:self.xdim, self.xdim:, :self.xdim] = -d3hde3
+            d3hdx3[:self.xdim, :self.xdim, self.xdim:] = -d3hde3
+
+            d3hdx3[self.xdim:, self.xdim:, self.xdim:] = -d3hde3
+            d3hdx3[self.xdim:, :self.xdim, :self.xdim] = -d3hde3
+            d3hdx3[self.xdim:, self.xdim:, :self.xdim] = d3hde3
+            d3hdx3[self.xdim:, :self.xdim, self.xdim:] = d3hde3
+
+            Axhat = A @ xhat
+            AA = A @ A
+            ddxL2h = dhdx @ AA + (AA @ xhat).T @ d2hdx2 + Axhat.T @ (
+                        d2hdx2 @ A + Axhat.T @ d3hdx3) + (d2hdx2 @ Axhat).T @ A
+            Lfh = ddxL2h @ Axhat
+            LgLfh = ddxL2h @ B
 
         return Lfh, LgLfh
 
@@ -379,13 +462,14 @@ class CBF:
         for i, xi in enumerate(x):
             for j, (xj, obs_r) in enumerate(zip(x_obs, obs_r_list)):
                 Ds_obs = (self.safety_radius + obs_r)
-                xj_obs = np.zeros(9)
-                xj_obs[-3:] = xj[0]  # position of obstacle is the only part of its state. TODO understand the shape of x_obs and remove this [0]
+                xj_obs = np.zeros(self.xdim)
+                xj_obs[-3:] = xj[
+                    0]  # position of obstacle is the only part of its state. TODO understand the shape of x_obs and remove this [0]
                 # we pass xj_des to be the same as xj so that Aj @ (xj-xj_des) = Aj @ 0 = 0 for all Aj to represent there is
                 # no motion of the obstacle.
                 Lfh, LgLfh = self._ctrl_affine(xi=xi, xj=xj_obs, xi_des=self.xdes[i], xj_des=xj_obs, i=i, j=j)
-                #here the LgLfh is computed for both inputs stacked, we only need it for the first so we can drop the rest
-                #TODO see custom_control_affine_terms for details on how to speed up
+                # here the LgLfh is computed for both inputs stacked, we only need it for the first so we can drop the rest
+                # TODO see custom_control_affine_terms for details on how to speed up
 
                 hdots = self._hdots(xi, xj_obs, safety_dist=Ds_obs, xi_des=self.xdes[i], xj_des=xj_obs, i=i, j=j)
                 # Build ij constraint
@@ -477,17 +561,19 @@ class DroneCBF(CBF):
                  vmax=None,
                  amax=None,
                  jmax=None,
-                 omega_max=np.ones(3)
+                 omega_max=np.ones(3),
+                 order=2
                  ):
         # For now we set all the bounds to zero because I believe we will need to change their indexing for the drone
         # state.
         self.num_agents = len(lin_models)
-        A = np.zeros((9*self.num_agents, 9*self.num_agents))
-        B = np.zeros((9*self.num_agents, 4*self.num_agents))
+        self.xdim = lin_models[0].A.shape[0]
+        A = np.zeros((self.xdim * self.num_agents, self.xdim * self.num_agents))
+        B = np.zeros((self.xdim * self.num_agents, 4 * self.num_agents))
         for i, model in enumerate(lin_models):
-            A[9*i:9*(i+1), 9*i:9*(i+1)] = model.A
-            B[9*i:9*(i+1), 4*i:4*(i+1)] = model.B
-        super().__init__(xy_only=False, zscale=zscale, order=2,
+            A[self.xdim * i:self.xdim * (i + 1), self.xdim * i:self.xdim * (i + 1)] = model.A
+            B[self.xdim * i:self.xdim * (i + 1), 4 * i:4 * (i + 1)] = model.B
+        super().__init__(xy_only=False, zscale=zscale, order=order,
                          umax=np.array([env.MAX_THRUST, omega_max[0], omega_max[1], omega_max[2]]),
                          safety_radius=safety_radius, cbf_poles=cbf_poles, room_bounds=room_bounds,
                          vmax=vmax, amax=amax, jmax=jmax, A=A, B=B, num_agents=self.num_agents)

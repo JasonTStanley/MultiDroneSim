@@ -106,7 +106,7 @@ class LQROmegaController(BaseController):
         e[3:6] = R_eq.T @ (x[3:6] - self.desired_vel)
 
         u = -self.K @ e
-        u[0] += u[0] + self.env.M * self.env.G  # offset by the equilibirum force
+        u[0] = u[0] + self.env.M * self.env.G  # offset by the equilibirum force
         if skip_low_level:
             return None, self.cap_u(u)
         action = self.compute_low_level(u,obs)

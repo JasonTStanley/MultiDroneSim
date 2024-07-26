@@ -11,22 +11,24 @@ solvers.options['show_progress'] = False
 # solvers.options['feastol'] = 1e-9 # default:1e-7
 
 class DroneQPTracker(object):
-    def __init__(self, cbf, order=2, num_robots=1):
+    def __init__(self, cbf, order=2, num_robots=1, xdim=9, env=None):
         self.cbf = cbf
         self.order = order
         self.num_robots = num_robots
         self.qp_tracker = QPTracker(cbf=cbf, order=order)
+        self.xdim = xdim
+        self.env=env
 
     def compute_control(self, obs, xdes, u_nominal, ignore_zmin=False, x_obs=None, obs_r_list=None):
         # Compute control using QPTracker
-        x = np.zeros((self.num_robots, 9))
+        x = np.zeros((self.num_robots, self.xdim))
         for i in range(self.num_robots):
-            x[i] = obs_to_lin_model(obs[i], dim=9)
+            x[i] = obs_to_lin_model(obs[i], dim=self.xdim, env=self.env)
 
         self.qp_tracker.cbf.set_xdes(xdes)
         success, u = self.qp_tracker.solve_fun(x, u_nominal, ignore_zmin=ignore_zmin, x_obs=x_obs, obs_r_list=obs_r_list)
         if success:
-            return u
+            return u.reshape((self.num_robots, -1))
         else:
             print("QPTracker cannot find cbf-qp controller. Using nominal control.")
             return u_nominal

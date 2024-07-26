@@ -3,35 +3,38 @@ import scipy.integrate
 import scipy.linalg as la
 from scipy.spatial.transform import Rotation
 
-from control import lqr_omega_controller, ThrustOmegaController
+from control.lqr import lqr_omega_controller
 from control.base_controller import BaseController
 from model.linearized import LinearizedModel
 from utils import obs_to_lin_model
 
 
-class DecentralizedLQROmega(BaseController):
+class DecentralizedLQRYankOmega(BaseController):
     def __init__(self, env, lin_models: [LinearizedModel], debug=False):
+        from control import ThrustOmegaController as TOC
         super().__init__(env)
         # set dimensions of model
         # A is mxm B is mxn, m=9, n=4
-        self.m = 9
+        self.m = 10
         self.n = 4
         self.mn = self.m + self.n
         # Brysons rule, essentially set Rii to be 1/(u^2_i) where u_i is the max input for the ith value)
-        max_thrust = env.MAX_THRUST
+
+        max_yank = (env.MAX_THRUST / env.CTRL_TIMESTEP) / 2  # guess? don't have an intuition for yank yet
 
         max_pitch_roll_rate_error = 0.1
         max_yaw_rate_error = 0.1
-        rflat = [1 / (max_thrust ** 2), 1 / (max_pitch_roll_rate_error ** 2), 1 / (max_pitch_roll_rate_error ** 2),
+        rflat = [1 / (max_yank ** 2), 1 / (max_pitch_roll_rate_error ** 2), 1 / (max_pitch_roll_rate_error ** 2),
                  1 / (max_yaw_rate_error ** 2)]
-
+        R = np.diag(rflat)
         max_vel_error = .15
         max_pos_error = .05
         max_yaw_error = np.pi / 40
         max_pitch_roll_error = np.pi / 20
-        # stack into Q in order of state x=[r, p, y, r_dot, p_dot, y_dot, vx, vy, vz, px, py, pz]
+        max_thrust = env.MAX_THRUST - env.M * env.G  # max thrust in equilibrium input
+        # stack into Q in order of state x=[r, p, y, T, vx, vy, vz, px, py, pz] (T is thrust)
         qflat = [1 / (max_pitch_roll_error ** 2), 1 / (max_pitch_roll_error ** 2), 1 / (max_yaw_error ** 2),
-                 1 / (max_vel_error ** 2), 1 / (max_vel_error ** 2), 1 / (max_vel_error ** 2),
+                 1 / (max_thrust ** 2), 1 / (max_vel_error ** 2), 1 / (max_vel_error ** 2), 1 / (max_vel_error ** 2),
                  1 / (max_pos_error ** 2), 1 / (max_pos_error ** 2), 1 / (max_pos_error ** 2)]
 
         self.lin_models = lin_models
@@ -59,7 +62,7 @@ class DecentralizedLQROmega(BaseController):
 
         self.V = np.eye(self.mn * self.num_robots)
         self.P = np.repeat(np.eye(self.mn)[:, :, None], self.num_robots, axis=2).transpose(2, 0, 1)
-        self.lqr_controllers = [lqr_omega_controller.LQROmegaController(env, lin_models[i], ThrustOmegaController(env))
+        self.lqr_controllers = [lqr_omega_controller.LQROmegaController(env, lin_models[i], TOC(env))
                                 for i in range(self.num_robots)]
         self.K = None
         self.desired_positions = np.zeros((self.num_robots, 3))
@@ -197,7 +200,7 @@ class DecentralizedLQROmega(BaseController):
     def compute(self, obs, skip_low_level=False):
         m = self.m
         n = self.n
-        es = [self.error_state(obs_to_lin_model(obs[i], dim=9),
+        es = [self.error_state(obs_to_lin_model(obs[i], dim=m),
                                np.hstack([np.array([0, 0, self.desired_yaws[i]]), self.desired_vels[i],
                                           self.desired_positions[i]]))
               for i in range(self.num_robots)]
@@ -210,15 +213,15 @@ class DecentralizedLQROmega(BaseController):
         u_robot[:, 0] += self.env.M * self.env.G
         if skip_low_level:
             #Return empty action, let the caller compute the low level control
-            return None, self.cap_u(u_robot)
+            return None, u_robot
 
         action = np.array([self.compute_low_level(u, obs[idx], idx) for idx,u in enumerate(u_robot)])
-        return action, self.cap_u(u_robot)
+        return action, u_robot
 
-    def cap_u(self, u):
-        #using the min thrust based on min crazyflie rpm and max thrust
-        u[:, 0] = np.clip(u[:, 0], 4*(9440.3**2 * self.env.KF), self.env.MAX_THRUST)
-        return u
+    # def cap_u(self, u):
+    #     #using the min thrust based on min crazyflie rpm and max thrust
+    #     u[:, 0] = np.clip(u[:, 0], 4*(9440.3**2 * self.env.KF), self.env.MAX_THRUST)
+    #     return u
 
     def compute_low_level(self, u, obs, robot_idx):
         ctrl = self.low_level_controllers[robot_idx]

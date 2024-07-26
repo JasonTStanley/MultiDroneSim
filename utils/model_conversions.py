@@ -17,7 +17,7 @@ def rpy_to_rot(rpy):
                         [0, 0, 1]])
     R = Rz @ Ry @ Rx
     return R
-def obs_to_lin_model(obs, dim=12):
+def obs_to_lin_model(obs, dim=12, env=None):
     x = np.zeros((dim,))
 
 
@@ -43,9 +43,18 @@ def obs_to_lin_model(obs, dim=12):
         x[3:6] = cur_ang_vel
         x[6:9] = cur_vel
         x[9:] = cur_pos
-    else:
+    elif dim==9:
         x[3:6] = cur_vel
         x[6:] = cur_pos
+    elif dim==10:
+        assert env is not None, "env must be provided for 10 dim model to calculate the thrust"
+        thrust = calc_z_thrust(env, obs)
+        x[3] = thrust
+        x[4:7] = cur_vel
+        x[7:] = cur_pos
+    else:
+        raise ValueError("Invalid dim for linear model")
+
     return x
 
 # def geo_model_to_obs(x):
@@ -123,3 +132,11 @@ def geo_x_dot_to_linear(geo_xdot):
     x_dot[6:9] = geo_xdot[6:9]
     x_dot[9:] = geo_xdot[:3]
     return x_dot
+
+def calc_z_thrust(env, obs):
+    rpms = obs[-4:]
+    # cur_quat = obs[3:7]
+    # R = Rotation.from_quat(cur_quat).as_matrix()
+    #
+    motor_thrusts = env.KF * rpms ** 2
+    return np.sum(motor_thrusts)

@@ -3,7 +3,7 @@ import scipy.integrate
 import scipy.linalg as la
 from scipy.spatial.transform import Rotation
 
-from control import lqr_controller
+from control.lqr import lqr_controller
 from control.base_controller import BaseController
 from model.linearized import LinearizedModel
 from utils import obs_to_lin_model, input_to_action

@@ -116,7 +116,7 @@ class CrazyflieLQR(BaseController):
         #
 
         u = -self.K @ e
-        u[0] += u[0] + self.env.M * self.env.G  # offset by the equilibirum force
+        u[0] = u[0] + self.env.M * self.env.G  # offset by the equilibirum force
         action = self.compute_low_level(obs, u)
         # action = input_to_action(self.env, u)
         return action, u
