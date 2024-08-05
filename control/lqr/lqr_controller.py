@@ -9,7 +9,7 @@ from utils.model_conversions import obs_to_lin_model, input_to_action
 
 
 class LQRController(BaseController):
-    def __init__(self, env, lin_model: LinearizedModel, Q=0.05 * np.eye(12), R=np.eye(4), debug=False):
+    def __init__(self, env, lin_model: LinearizedModel, Q=0.05 * np.eye(12), R=np.eye(4), debug=False, use_noisy_model=False):
         super().__init__(env)
         # try Q pos = 10, vel = 10,
         # R = .1
@@ -44,18 +44,19 @@ class LQRController(BaseController):
         self.debug = debug
         self.P = None
         self.K = None
+        self.A = lin_model.A
+        self.B = lin_model.B
+        if use_noisy_model:
+            self.A = lin_model.Ahat
+            self.B = lin_model.Bhat
         self.compute_gain_matrix()
 
     def compute_gain_matrix(self):
-        self.P = la.solve_continuous_are(self.lin_model.A, self.lin_model.B, self.Q, self.R, e=None, s=None,
+        self.P = la.solve_continuous_are(self.A, self.B, self.Q, self.R, e=None, s=None,
                                          balanced=True)
-        # discrete time version
-        # K = (R + B^T @ P B)^-1 @ B^T @ P @ A
-        # self.K = la.inv(self.R + self.lin_model.B.T @ self.P @ self.lin_model.B) @ self.lin_model.B.T @ self.P @ self.lin_model.A
-
         # continuous time version
         # K = R^-1 @ B^T @ P
-        self.K = la.solve(self.R, self.lin_model.B.T @ self.P)
+        self.K = la.solve(self.R, self.B.T @ self.P)
 
     def set_desired_trajectory(self, robot_idx, desired_pos, desired_vel, desired_acc, desired_yaw, desired_omega):
         #ignore robot_idx as this is for a single robot.
@@ -80,7 +81,7 @@ class LQRController(BaseController):
         arr_out[2] = -R[0, 1]
         return arr_out
 
-    def compute(self, obs):
+    def compute(self, obs, skip_low_level=False):
         x = obs_to_lin_model(obs)
         e = np.copy(x)
 
@@ -108,6 +109,6 @@ class LQRController(BaseController):
         #
 
         u = -self.K @ e
-        u[0] += u[0] + self.env.M * self.env.G # offset by the equilibirum force
+        u[0] = u[0] + self.env.M * self.env.G # offset by the equilibirum force
         action = input_to_action(self.env, u)
         return action, u

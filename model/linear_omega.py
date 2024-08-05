@@ -21,20 +21,16 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 import utils.model_conversions as conversions
 
-class LinearizedModel:
+class LinearizedOmegaModel:
     def __init__(self, env, debug=False):
         self.mass = env.M
-        self.Ixx = env.J[0, 0]
-        self.Iyy = env.J[1, 1]
-        self.Izz = env.J[2, 2]
         self.g = env.G
-        self.A = np.zeros((12, 12))
-        self.B = np.zeros((12, 4))
+        self.A = np.zeros((9, 9))
+        self.B = np.zeros((9, 4))
         self.C = np.eye(12)
-        self.D = np.zeros((12, 6)) #dissapation matrix
         self.env = env
-        self.Ahat = np.zeros((12, 12))
-        self.Bhat = np.zeros((12, 4))
+        self.Ahat = np.zeros((9, 9))
+        self.Bhat = np.zeros((9, 4))
         self.init_matrices()
 
 
@@ -44,39 +40,25 @@ class LinearizedModel:
             print("B matrix: ")
             print(self.B)
 
-            print("D matrix: ")
-            print(self.D)
 
 
 
     def init_matrices(self):
+        self.A[6:, 3:6] = np.eye(3)
 
-        self.A[0:3, 3:6] = np.eye(3)
-        self.A[9:, 6:9] = np.eye(3)
-        # self.A[6, 1] = -self.g
-        # self.A[7, 0] = self.g
+        self.A[3, 1] = self.g
+        self.A[4, 0] = -self.g
 
-        self.A[6, 1] = self.g
-        self.A[7, 0] = -self.g
-
-        self.B[8, 0] = 1.0 / self.mass
-        self.B[3:6, 1:] = np.diag([1 / self.Ixx, 1 / self.Iyy, 1 / self.Izz])
-
-        self.D[:, 2:] = self.B.copy()
-        self.D[7, 1] = 1.0 / self.mass
-        self.D[6, 0] = 1.0 / self.mass
+        self.B[5, 0] = 1.0 / self.mass
+        self.B[:3, 1:] = np.eye(3)
 
         #initialize Ahat and Bhat to be a slight permutation of A and B
         self.Ahat = self.A.copy()
-        self.Ahat[6, 1] = self.g
-        self.Ahat[7, 0] = -self.g
+        self.Ahat[3, 1] = self.g*1.2
+        self.Ahat[4, 0] = -self.g*1.2
 
         self.Bhat = self.B.copy()
-        # self.Bhat[3:6, 1:] = np.array([[1 / self.Ixx, 0, 0], [0, 1 / self.Iyy, 0], [0, 0, 1 / self.Izz]]) * 1.15
-        # self.Bhat[8, 0] = (1.0 / self.mass) * 1.25
-
-        self.Bhat[3:6, 1:] = np.array([[1 / self.Ixx, 0, 0], [0, 1 / self.Iyy, 0], [0, 0, 1 / self.Izz]]) * 0.75
-        self.Bhat[8, 0] = (1.0 / (self.mass * .75))
+        self.Bhat[5, 0] = (1.0 / (self.mass * 0.8) )
 
 
 
@@ -90,12 +72,8 @@ class LinearizedModel:
         return self.calc_xdot(x,action)
 
     def calc_xdot(self, x, action):
+        #TODO may need to change this
         u = conversions.action_to_input(self.env, action)
-        #TODO change to standard frame instead of NED convention
-        # to_ned = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
-        # u[1:] = to_ned @ u[1:]
-        # u[0] = -u[0]
-        # u_eq = np.array([-self.mass * self.g, 0, 0, 0])
         u_eq = np.array([self.mass * self.g, 0, 0, 0])
         x_eq = np.zeros((12,))
         x_eq[-3:] = x[-3:]
@@ -106,4 +84,4 @@ class LinearizedModel:
 if __name__ == "__main__":
     np.set_printoptions(precision=3)
     np.set_printoptions(suppress=True)
-    model = LinearizedModel(debug=True)
+    model = LinearizedOmegaModel(debug=True)

@@ -1,0 +1,1 @@
+from obstacles.urdf_generator import *

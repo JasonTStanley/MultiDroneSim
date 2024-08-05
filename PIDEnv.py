@@ -12,7 +12,7 @@ from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.utils.utils import sync, str2bool
 
 import MultiDroneExample
-from utils import logging
+from utils import custom_logging
 import threading
 
 DEFAULT_DRONES = DroneModel("cf2p")
