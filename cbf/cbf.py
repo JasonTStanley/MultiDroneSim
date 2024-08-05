@@ -41,11 +41,13 @@ class CBF:
     def __init__(self, xy_only, zscale=2.0, order=3, umax=None, safety_radius=1.0,
                  cbf_poles=np.array([-2.2, -2.4, -2.6]),
                  room_bounds=np.array([-4.25, 4.5, -3.5, 4.25, 1.0, 2.0]),
-                 vmax=2,
-                 amax=3,
-                 jmax=4,
+                 Fmax=3,
+                 Fmin=-3,
+                 RPY_max=np.array([np.pi / 6, np.pi / 6, 2 * np.pi]),
+                 vmax=np.array([2, 2, 2]),
                  A=None,
                  B=None,
+                 do_state_bounds=True,
                  num_agents=1):
         self.xdim = A.shape[0] // num_agents  # state dimension
         self.zscale = zscale  # scale in z safety distance in super-ellipsoid
@@ -61,7 +63,7 @@ class CBF:
 
         self._hdots = self.custom_hdots
         self._ctrl_affine = self.custom_control_affine_terms
-        self.state_bounds = [StateBound(None, None) for _ in range(self.order)]
+        xmin, xmax, ymin, ymax, zmin, zmax = None, None, None, None, None, None
         if room_bounds is not None:
             assert len(
                 room_bounds) == 6, "Require xmin, xmax, ymin, ymax, zmin, zmax (6 values), but len(room_bounds)={}".format(
@@ -77,23 +79,38 @@ class CBF:
                 len(self.cbf_poles), self.order)
 
             # Also get the bounds for vel, acc, jrk, TODO: load and consolidate with _build_box_const function
-            self.vmax = vmax
-            self.amax = amax
-            self.jmax = jmax
 
-            for i in range(self.order):
-                if i == 0:  # Position bounds
-                    self.state_bounds[i] = StateBound(min_bounds=np.array([xmin, ymin, zmin]),
-                                                      max_bounds=np.array([xmax, ymax, zmax]))
-                elif (i == 1) and (self.vmax is not None):  # Velocity bounds
-                    self.state_bounds[i] = StateBound(min_bounds=np.array([-self.vmax] * 3),
-                                                      max_bounds=np.array([self.vmax] * 3))
-                elif (i == 2) and (self.amax is not None):  # Acceleration bounds
-                    self.state_bounds[i] = StateBound(min_bounds=np.array([-self.amax] * 3),
-                                                      max_bounds=np.array([self.amax] * 3))
-                elif (i == 3) and (self.jmax is not None):  # Jerk bounds
-                    self.state_bounds[i] = StateBound(min_bounds=np.array([-self.jmax] * 3),
-                                                      max_bounds=np.array([self.jmax] * 3))
+        # Depending on the order of the system set constraints on the maximum vals
+
+        self.Fmax = Fmax # used only for 3rd order system
+        self.Fmin = Fmin
+
+        self.Vmax = vmax
+        self.RPY_max = RPY_max
+
+        # bounds are:
+        # 1. rpy
+        # 2. vel
+        # 3. pos
+        # 4. optionally Force
+
+
+        self.state_bounds = [StateBound(None, None) for _ in range(self.order + 1)]
+        self.do_state_bounds = do_state_bounds
+        if do_state_bounds:
+            self.rpy_bounds = StateBound(min_bounds=np.array(RPY_max) * -1,
+                                              max_bounds=np.array(RPY_max))
+            self.vel_bounds =  StateBound(min_bounds=np.array([-self.Vmax] * 3),
+                                              max_bounds=np.array([self.Vmax] * 3))
+
+            self.room_bounds = StateBound(min_bounds=np.array([xmin, ymin, zmin]),
+                                              max_bounds=np.array([xmax, ymax, zmax]))
+
+
+            self.force_bounds = None
+            if self.order == 3:
+                self.force_bounds = StateBound(min_bounds=self.Fmin,
+                                                  max_bounds=self.Fmax)
 
         self.A = A
         self.B = B
@@ -105,6 +122,7 @@ class CBF:
         self.G = np.zeros((self.order, 1))
         self.G[-1, 0] = 1.0
         self.Kcbf = np.asarray(signal.place_poles(self.F, self.G, cbf_poles).gain_matrix)
+        # self.Kcbf = np.array([[50, 40, 20]])
 
     def set_xdes(self, xdes):
         if xdes.shape != self.xdes.shape:
@@ -113,39 +131,6 @@ class CBF:
             else:
                 raise ValueError("xdes shape {} does not match expected shape {}".format(xdes.shape, self.xdes.shape))
         self.xdes = xdes
-
-    def rectify(self, x, uhat, ignore_zmin=False, x_obs=None, obs_r_list=None):
-        # x is a list of (order, 3) np array; uhat is a list of (3, ) np array
-        N = len(uhat)
-        P = 2 * np.eye(4 * N)
-        q = -2 * np.hstack(uhat).reshape(4 * N, )
-        assert q.shape == (4 * N,), q.shape
-
-        G, h = self._build_ineq_const(x, ignore_pos_zmin=ignore_zmin, x_obs=x_obs, obs_r_list=obs_r_list)
-
-        # Solve for minimally invasive control (if possible)
-        try:
-            sol = solvers.qp(matrix(P), matrix(q), matrix(G), matrix(h))  # without equality constraint
-            sol_x = sol['x']
-            u = [np.asarray(sol_x[3 * i:3 * (i + 1)]).reshape((3,)) for i in range(N)]
-            return True, u
-        except Exception as e:
-            # rospy.logerr("MAVCBF cannot rectify. Error: {}".format(str(e)))
-            return False, None
-
-    def get_m12(self):
-        return 1 / self.B[5, 0], 1 / self.B[5, 0]  # TODO ensure that we get the correct masses
-
-    def get_g12(self):
-        return self.A[3, 1], self.A[3, 1]
-
-    # def custom_hdots(self, xi, xj, safety_dist, xi_des, xj_des, i=0, j=1):
-    #     if self.order == 2:
-    #         return self.custom_hdots_second(xi, xj, safety_dist, xi_des, xj_des, i, j)
-    #     elif self.order == 3:
-    #         return self.custom_hdots_3rd(xi, xj, safety_dist, xi_des, xj_des, i, j)
-    #     else:
-    #         raise ValueError("Only support relative degree between 2 (thrust) and 3 (yank) system")
 
     def custom_hdots(self, xi, xj, safety_dist, xi_des, xj_des, i=0, j=1):
         # Get 0-th to {order-1}-th time derivatives for the ECBF constraint given "ellipsoid" super-ellipsoid
@@ -265,7 +250,7 @@ class CBF:
             d2hdx2[self.xdim:, :self.xdim] = -d2hde2
 
             d3hde3 = np.zeros((self.xdim, self.xdim, self.xdim))
-            #im writing this with, depth, row, column
+            # im writing this with, depth, row, column
             d3hde3[-3, -3, -3] = 24 * ex
             d3hde3[-3, -3, -2] = 8 * ey
             d3hde3[-3, -2, -3] = 8 * ey
@@ -277,7 +262,7 @@ class CBF:
             d3hde3[-2, -2, -3] = 8 * ex
             d3hde3[-1, -1, -1] = 24 * ez / c ** 4
 
-            d3hdx3 = np.zeros((2 * self.xdim, 2 * self.xdim, 2*self.xdim))
+            d3hdx3 = np.zeros((2 * self.xdim, 2 * self.xdim, 2 * self.xdim))
             d3hdx3[:self.xdim, :self.xdim, :self.xdim] = d3hde3
             d3hdx3[:self.xdim, self.xdim:, self.xdim:] = d3hde3
             d3hdx3[:self.xdim, self.xdim:, :self.xdim] = -d3hde3
@@ -291,7 +276,7 @@ class CBF:
             Axhat = A @ xhat
             AA = A @ A
             ddxL2h = dhdx @ AA + (AA @ xhat).T @ d2hdx2 + Axhat.T @ (
-                        d2hdx2 @ A + Axhat.T @ d3hdx3) + (d2hdx2 @ Axhat).T @ A
+                    d2hdx2 @ A + Axhat.T @ d3hdx3) + (d2hdx2 @ Axhat).T @ A
             Lfh = ddxL2h @ Axhat
             LgLfh = ddxL2h @ B
 
@@ -317,47 +302,6 @@ class CBF:
 
         return Gij, hij
 
-    def _build_box_const(self, x, i, ignore_zmin=False, derivative_order=0):
-        """Box constraint for agent i"""
-        N = self.num_agents
-
-        # Check if state bound exists TODO: clean up, ensure that both min & max bounds should exist in initialization
-        if (self.state_bounds[derivative_order].min_bounds is None) or (
-                self.state_bounds[derivative_order].max_bounds is None):
-            return np.zeros((0, 4 * N)), np.zeros((0))
-
-        xi = x[i]
-        if ignore_zmin:
-            Gi = np.zeros((5, 4 * N))
-            hi = np.zeros((5,))
-        else:
-            Gi = np.zeros((6, 4 * N))
-            hi = np.zeros((6,))
-
-        # Modify default cbf poles based on the derivative ordre of box constraint (e.g., vel box constraint does not depend on position)
-        Kcbf_local = self.Kcbf.copy()
-        Kcbf_local[0, :derivative_order] = 0
-
-        # Upper bounds
-        Gi[0:4, 4 * i:4 * i + 4] = np.eye(4)
-        xi_max = np.zeros((self.order, 3))
-        xi_max[derivative_order] = self.state_bounds[derivative_order].max_bounds  # xi_max[0] = self.max_room_bounds
-        hi[:3] = np.dot(Kcbf_local, xi_max - xi)
-
-        # Lower bounds
-        Gi[4, 4 * i] = -1
-        Gi[4, 4 * i + 1] = -1
-        if not ignore_zmin:
-            Gi[5, 4 * i + 2] = -1
-
-        xi_min = np.zeros((self.order, 3))
-        xi_min[derivative_order] = self.state_bounds[derivative_order].min_bounds  # xi_min[0] = self.min_room_bounds
-        if not ignore_zmin:
-            hi[3:6] = np.dot(Kcbf_local, xi - xi_min)
-        else:
-            hi[3:5] = np.dot(Kcbf_local, xi[:, :-1] - xi_min[:, :-1])
-
-        return Gi, hi
 
     """Helpers for building inequality constraints for QP"""
 
@@ -408,7 +352,8 @@ class CBF:
             h = np.hstack((h, h_umax))
 
         # box constraint for states for all agents
-        G_statebnd, h_statebnd = self._build_state_bound_const(x, ignore_pos_zmin=ignore_pos_zmin)
+        # G_statebnd, h_statebnd = self._build_state_bound_const(x, ignore_pos_zmin=ignore_pos_zmin)
+        G_statebnd, h_statebnd = self.custom_build_state_bound_const(x)
         G = np.vstack((G, G_statebnd))
         h = np.hstack((h, h_statebnd))
 
@@ -418,35 +363,6 @@ class CBF:
             # G_obs, h_obs = self._build_obstacles_const(x, x_obs, obs_r_list)
             G = np.vstack((G, G_obs))
             h = np.hstack((h, h_obs))
-
-        return G, h
-
-    def _build_obstacles_const(self, x, x_obs, obs_r_list):
-        # TODO: check during drone landing. The ground robots should avoid the drones
-        # TODO: verify that it works for moving obstacles
-        # Collision avoidance of every agent with a list of obstacles (static or dynamic) and their radii
-
-        N = len(x)
-        N_obs = len(x_obs)
-        N_const = N_obs * N
-
-        G = np.zeros((N_const, 4 * N))
-        h = np.zeros((N_const))
-
-        for i, xi in enumerate(x):
-            for j, (xj, obs_r) in enumerate(zip(x_obs, obs_r_list)):
-                # Difference in pos, vel, acc, jrk, where z axis is scaled.
-                xdots = [(xi[k] - xj[k]) * np.array([1.0, 1.0, 1.0 / self.zscale]) for k in range(self.order)]
-                # Compute time derivatives of barrier functions (0~order-1)
-                hdots = self._hdots(xdots, self.safety_radius + obs_r)
-                # Compute affine term in control input
-                Lfh, LgLfh = self._ctrl_affine(xdots)
-
-                # Build ij constraint
-                G[i * N_obs + j, 3 * i:3 * (i + 1)] = -LgLfh
-
-                h[i * N_obs + j] = np.dot(self.Kcbf,
-                                          hdots) + Lfh  # No additional term since obstacles are not controlled at the {order}-th derivative (e.g. order=4 for snap control)
 
         return G, h
 
@@ -463,8 +379,10 @@ class CBF:
             for j, (xj, obs_r) in enumerate(zip(x_obs, obs_r_list)):
                 Ds_obs = (self.safety_radius + obs_r)
                 xj_obs = np.zeros(self.xdim)
-                xj_obs[-3:] = xj[
-                    0]  # position of obstacle is the only part of its state. TODO understand the shape of x_obs and remove this [0]
+                xj_obs[-3:] = xj[0]  # position of obstacle is the only part of its state.
+                # TODO understand the shape of x_obs and remove this [0]
+                # for now obstacles only have position
+
                 # we pass xj_des to be the same as xj so that Aj @ (xj-xj_des) = Aj @ 0 = 0 for all Aj to represent there is
                 # no motion of the obstacle.
                 Lfh, LgLfh = self._ctrl_affine(xi=xi, xj=xj_obs, xi_des=self.xdes[i], xj_des=xj_obs, i=i, j=j)
@@ -494,15 +412,86 @@ class CBF:
         return G, h
 
     def _build_state_bound_const(self, x, ignore_pos_zmin):
+        #TODO Figure out how to implement this for our version, might look quite different
+        # since we don't have an integrator system
+
         # box constraint for states (including room bounds) for each agent i
+        N = self.num_agents
+        G = np.zeros((0, 4 * N))  # place holder
+        h = np.zeros((0,))  # place holder
+
+        #G and H ends up being the result of stacking Gi and hi for each order,
+        # (j  inner loop) and for each robot( i outer loop)
+        for i in range(N):
+            for j in range(self.order + 1):
+                if not self.do_state_bounds:
+                    Gi, hi = np.zeros((0, 4 * N)), np.zeros((0))
+                else:
+                    #G*u <= h
+                    # G is shape (c, 4N) and h is shape (c,) where c is the # of constraints
+                    xi = x[i]
+
+                    size = self.xdim
+                    Kcbf_local = self.Kcbf.copy()
+
+                    Gi_velz = Kcbf_local[0, :]
+                    Gi = None
+                    hi = None
+
+                G = np.vstack((G, Gi))
+                h = np.hstack((h, hi))
+
+        return G, h
+
+    def custom_force_bound_const(self, x, i):
+        N = self.num_agents
+        G = np.zeros((0, 4*N))
+        h = np.zeros((0,))
+        if self.order != 3:
+            return G, h
+
+        xi = x[i]
+        Gi = np.zeros((2, 4*N))
+        hi = np.zeros((2,))
+        Gi[0, 4*i+3] = 1
+        Gi[1, 4*i+3] = -1
+        Kcbf_local = self.Kcbf.copy()
+        hi[0] = Kcbf_local[0,-1] * (self.Fmax - xi[3])
+        hi[1] = Kcbf_local[0,-1] * (xi[3] - self.Fmin)
+        G = np.vstack((G, Gi))
+        h = np.hstack((h, hi))
+
+        return G, h
+
+    def custom_build_state_bound_const(self, x):
         N = len(x)
         G = np.zeros((0, 4 * N))  # place holder
         h = np.zeros((0,))  # place holder
+        #need to specify room bounds, and state bounds
+
         for i in range(N):
-            for j in range(self.order):
-                Gi, hi = self._build_box_const(x, i, ignore_zmin=(ignore_pos_zmin and j == 0), derivative_order=j)
-                G = np.vstack((G, Gi))
-                h = np.hstack((h, hi))
+            if not self.do_state_bounds:
+                Gi, hi = np.zeros((0, 4 * N)), np.zeros((0))
+            else:
+                Gi, hi = self.custom_force_bound_const(x, i)
+
+                    # # G*u <= h
+                    # # G is shape (c, 4N) and h is shape (c,) where c is the # of constraints
+                    # xi = x[i]
+                    # Kcbf_local = self.Kcbf.copy()
+                    #
+                    # Gi = np.zeros((2*self.xdim, 4 * N)) #min and max for each state
+                    # hi = np.zeros((2*self.xdim,)) #min and max for each state
+                    # #upper bound
+                    # Gi[:self.xdim, 4*i:4*i+4] = np.eye(4)
+                    # #TODO still not implemented
+                    #
+                    # #lower bound
+                    # Gi[self.xdim:, 4*i:4*i+4] = -np.eye(4)
+
+
+            G = np.vstack((G, Gi))
+            h = np.hstack((h, hi))
 
         return G, h
 
@@ -558,10 +547,7 @@ class DroneCBF(CBF):
                  safety_radius=1,
                  cbf_poles=np.array([-2.2, -2.4]),
                  room_bounds=None,
-                 vmax=None,
-                 amax=None,
-                 jmax=None,
-                 omega_max=np.ones(3),
+                 omega_max=np.array([10, 10, 10]),
                  order=2
                  ):
         # For now we set all the bounds to zero because I believe we will need to change their indexing for the drone
@@ -573,10 +559,22 @@ class DroneCBF(CBF):
         for i, model in enumerate(lin_models):
             A[self.xdim * i:self.xdim * (i + 1), self.xdim * i:self.xdim * (i + 1)] = model.A
             B[self.xdim * i:self.xdim * (i + 1), 4 * i:4 * (i + 1)] = model.B
+
+
+        Fmin = -env.M * env.G
+        Fmax = env.MAX_THRUST
+        Ymax = (env.MAX_THRUST / env.CTRL_TIMESTEP ) / 100
+        RPY_max = np.array([np.pi / 6, np.pi / 6, 2 * np.pi])
+        omega_max = omega_max
+        if order==2:
+            umax = np.array([env.MAX_THRUST, omega_max[0], omega_max[1], omega_max[2]])
+        elif order ==3:
+            umax = np.array([Ymax, omega_max[0], omega_max[1], omega_max[2]])
+
         super().__init__(xy_only=False, zscale=zscale, order=order,
-                         umax=np.array([env.MAX_THRUST, omega_max[0], omega_max[1], omega_max[2]]),
+                         umax=umax,
                          safety_radius=safety_radius, cbf_poles=cbf_poles, room_bounds=room_bounds,
-                         vmax=vmax, amax=amax, jmax=jmax, A=A, B=B, num_agents=self.num_agents)
+                         Fmin=Fmin, Fmax=Fmax, RPY_max=RPY_max, A=A, B=B, num_agents=self.num_agents)
 
         self.lin_models = lin_models
         self.env = env

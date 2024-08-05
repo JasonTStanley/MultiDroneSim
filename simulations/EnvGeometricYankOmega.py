@@ -25,7 +25,7 @@ DEFAULT_RECORD = False
 DEFAULT_USER_DEBUG_GUI = False
 DEFAULT_SIMULATION_FREQ_HZ = 100
 DEFAULT_CONTROL_FREQ_HZ = 100
-DEFAULT_DURATION_SEC = 50
+DEFAULT_DURATION_SEC = 5
 DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_NUM_DRONES = 1  # 2
 controllers = ['lqr', 'geometric']  # whichever is first will be default
@@ -270,7 +270,8 @@ class GeometricEnv:
         PYB_CLIENT = env.getPyBulletClient()
         DRONE_IDS = env.getDroneIds()
         env._showDroneLocalAxes(0)
-
+        dlog = utils.DataLogger('data', ['F'])
+        dlog.add_entry_deriv('F', env.CTRL_TIMESTEP)
         # PID control for set point regulation
         ctrl = []
         if args.drone in [DroneModel.CF2X, DroneModel.CF2P]:
@@ -302,6 +303,10 @@ class GeometricEnv:
                     controller.set_desired_trajectory(j, desired_pos=pos, desired_vel=vel, desired_acc=acc,
                                                       desired_yaw=yaw,
                                                       desired_omega=omega)
+
+                    dlog.add_entry('pos*', pos)
+                    dlog.add_entry('vel*', vel)
+                    dlog.add_entry('acc*', acc)
                 else:
 
                     controller = ctrl[0] if args.controller == 'dlqr' else ctrl[j]
@@ -312,6 +317,12 @@ class GeometricEnv:
 
                 if args.controller != 'dlqr':
                     action[j, :], u = ctrl[j].compute(obs[j])
+                    dlog.add_entry('Y', u[0])
+                    dlog.add_entry('w_u', u[1:])
+                    dlog.add_entry('gt_w', obs[j][13:16])
+                    dlog.add_entry('F', conversions.calc_z_thrust(env, obs[j]))
+
+
 
             # Apply the control input
             if args.controller == 'dlqr':
@@ -332,6 +343,20 @@ class GeometricEnv:
                 env.render()
             sync(i, START, env.CTRL_TIMESTEP)
         # Close the environment
+        dlog.save_csv()
+        # dlog.plot_all()
+        dlog.create_figure()
+        dlog.plot_key('F')
+        dlog.plot_key('Y')
+        dlog.plot_deriv_key('F')
+        dlog.show_with_legend()
+
+        dlog.create_figure()
+        dlog.plot_key('w_u')
+        dlog.plot_key('gt_w')
+        dlog.show_with_legend()
+
+
         env.close()
 
     def geometric_xdot(self, obs):
@@ -387,7 +412,7 @@ if __name__ == "__main__":
     # trajs = [WaitTrajectory(duration=20, position=geo.TARGET_POSITIONS[j]) for j in range(ARGS.num_drones)]
     trajs = [Lemniscate(center=np.array([0, 0, .5]), omega=1.5, yaw_rate=0) for _ in range(ARGS.num_drones)]
     geo.do_control(trajs=trajs, render=False)
-    # np.save("observations_omega.npy", geo.observations)
+    np.save("observations_omega.npy", geo.observations)
     exit()
     # computed_K, theta = geo.warm_up_only()
     computed_K, theta = geo.fedCE(num_iter=20)

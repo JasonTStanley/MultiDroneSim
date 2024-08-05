@@ -185,7 +185,7 @@ class GeometricEnv:
 
             # update the theta and V values
             if i != 0:  # skip first because the initial state of the drone can be far from the desired state
-                dLQR.theta_update(phis, e_tp1s)
+                dLQR.theta_update2(phis, e_tp1s)
 
             if do_print:
                 env.render()
@@ -253,7 +253,7 @@ class GeometricEnv:
 
             # update the theta and V values
             if i != 0:
-                dLQR.theta_update(phis, e_tp1s)
+                dLQR.theta_update2(phis, e_tp1s)
 
             t += env.CTRL_TIMESTEP
             if do_print:
@@ -361,8 +361,8 @@ class GeometricEnv:
         self.INIT_XYZS = np.zeros((args.num_drones, 3))
 
         for i in range(1, args.num_drones):  # first drone starts at (0,0,0) so don't initialize on circle
-            self.INIT_XYZS[i, 0] = args.init_rad * np.cos((i / args.num_drones) * 2 * np.pi)
-            self.INIT_XYZS[i, 1] = args.init_rad * np.sin((i / args.num_drones) * 2 * np.pi)
+            self.INIT_XYZS[i, 0] = args.init_rad * np.sin((i / args.num_drones) * 2 * np.pi)
+            self.INIT_XYZS[i, 1] = args.init_rad * np.cos((i / args.num_drones) * 2 * np.pi)
             self.INIT_XYZS[i, 2] = 0.0
 
         # initialize the target positions and orientations to just be a vertical offset of starting positions
@@ -404,4 +404,4 @@ if __name__ == "__main__":
                                                 end=(geo.TARGET_POSITIONS[idx]), speed=1)])
              for idx in range(ARGS.num_drones)]
     geo.do_control(trajs=trajs, computed_K=computed_K, render=False, use_noisy_model=False)
-    np.save("observations2.npy", geo.observations)
+    np.save("observations_lem_bad_mass.npy", geo.observations)

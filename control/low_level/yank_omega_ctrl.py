@@ -36,7 +36,6 @@ class YankOmegaController():
         self.cur_thrust= self.hover_thrust
 
 
-
     ################################################################################
 
     def computeControlFromInput(self, u, control_timestep, cur_ang_vel, cur_thrust):
@@ -48,6 +47,7 @@ class YankOmegaController():
         return rpm
 
 
+
     ################################################################################
 
     def yank2thrust(self, yank, control_timestep, cur_thrust):
@@ -55,4 +55,9 @@ class YankOmegaController():
         #thrust is in N
         #control_timestep is in seconds
         return cur_thrust + yank * control_timestep
+
+
+    ################################################################################
+
+
 

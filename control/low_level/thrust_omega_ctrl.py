@@ -35,9 +35,9 @@ class ThrustOmegaController(BaseControl):
             print("[ERROR] in DSLPIDControl.__init__(), DSLPIDControl requires DroneModel.CF2X or DroneModel.CF2P")
             exit()
 
-        #try 7500, 7500, 7500 because it makes the error very low
-        self.P_COEFF_OMEGA_TOR = np.array([25000., 25000., 25000.])
-        self.I_COEFF_OMEGA_TOR = np.array([10., 10., 15.])
+
+        self.P_COEFF_OMEGA_TOR = np.array([17500., 17500., 17500.])
+        self.I_COEFF_OMEGA_TOR = np.array([10., 10., 10.])
 
         self.D_COEFF_OMEGA_TOR = np.array([0., 0., 0.])
         self.PWM2RPM_SCALE = 0.2685

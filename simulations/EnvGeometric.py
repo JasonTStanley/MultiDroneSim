@@ -27,11 +27,11 @@ DEFAULT_RECORD = False
 DEFAULT_USER_DEBUG_GUI = False
 DEFAULT_SIMULATION_FREQ_HZ = 100
 DEFAULT_CONTROL_FREQ_HZ = 100
-DEFAULT_DURATION_SEC = 18
+DEFAULT_DURATION_SEC = 30
 DEFAULT_OUTPUT_FOLDER = 'results'
-DEFAULT_NUM_DRONES = 1  # 2
+DEFAULT_NUM_DRONES = 2  # 2
 controllers = ['lqr', 'geometric']  # whichever is first will be default
-
+wind_force = .00025
 
 def parse_args():
     #### Define and parse (optional) arguments for the script ##
@@ -44,6 +44,8 @@ def parse_args():
                         help='Physics updates (default: PYB)', metavar='', choices=Physics)
     parser.add_argument('--gui', default=DEFAULT_GUI, type=str2bool,
                         help='Whether to use PyBullet GUI (default: True)', metavar='')
+    parser.add_argument('--record', default=DEFAULT_RECORD, type=str2bool,
+                        help='Whether to record the simulation (default: True)', metavar='')
     parser.add_argument('--plot', default=DEFAULT_PLOT, type=str2bool,
                         help='Whether to plot the simulation results (default: True)', metavar='')
     parser.add_argument('--user_debug_gui', default=DEFAULT_USER_DEBUG_GUI, type=str2bool,
@@ -56,7 +58,7 @@ def parse_args():
                         help='Duration of the simulation in seconds (default: 5)', metavar='')
     parser.add_argument('--output_folder', default=DEFAULT_OUTPUT_FOLDER, type=str,
                         help='Folder where to save logs (default: "results")', metavar='')
-    parser.add_argument('--init_rad', default=.2, type=float,
+    parser.add_argument('--init_rad', default=1, type=float,
                         help='Initial radius of the drones (default: 1.0)', metavar='')
     parser.add_argument('--controller', default=controllers[0], type=str,
                         help=f'Controller to use from {controllers} (default: {controllers[0]})', metavar='')
@@ -82,7 +84,7 @@ class GeometricEnv:
             self.starting_target_offset = 1  # initial goal is just 1m above start pose
             self.circle_initialize()
 
-    def create_env(self, gui=True):
+    def create_env(self, gui=True, record=False):
         args = self.args
         env = CtrlAviary(drone_model=args.drone,
                          num_drones=args.num_drones,
@@ -92,6 +94,7 @@ class GeometricEnv:
                          pyb_freq=args.simulation_freq_hz,
                          ctrl_freq=args.control_freq_hz,
                          gui=args.gui and gui,
+                         record=args.record or record,
                          user_debug_gui=args.user_debug_gui,
                          output_folder=args.output_folder
                          )
@@ -107,28 +110,57 @@ class GeometricEnv:
                                         [-r, r, -r, r]])
         return self.env
 
-    def fedCE(self, num_iter=15):
+    def fedCE(self, num_iter=15, record_results=False):
         env = self.env
         args = self.args
         steps = 0
         dLQR = DecentralizedLQR(env, self.linear_models)
         START = time.time()
+        preds = []
         for n in range(num_iter):
             steps = self.fedCE_iteration(env, dLQR, START, steps, n, do_warmup=(n == 0), random_warmup=True)
             thetaA = dLQR.theta[:12 * args.num_drones, :].T
             thetaB = dLQR.theta[12 * args.num_drones:, :].T
-            with np.printoptions(precision=3, suppress=True, linewidth=100000):
-                print(f"n: {n}, steps: {steps}")
-                print("Theta A:\n ", thetaA)
-                print("Theta B:\n ", thetaB)
+            if record_results:
+                pred_n = []
+                for i in range(args.num_drones):
+                    A = thetaA[i * 12:(i + 1) * 12, i * 12:(i + 1) * 12]
+                    B = thetaB[i * 12:(i + 1) * 12, i * 4:(i + 1) * 4]
 
+                    pg_pred = A[6,1]
+                    ng_pred = A[7,0]
+                    Iv = A[:3,3:6].flatten()
+                    Iw = A[9:, 6:9].flatten()
+                    Iinv = B[3:6, 1:].flatten()
+                    minv = B[8, 0]
+                    pred_n.append(np.hstack([pg_pred, ng_pred, Iv, Iw, Iinv, minv]))
+                preds.append(pred_n)
+                print(f"n: {n}, steps: {steps}")
+
+            else:
+
+                with np.printoptions(precision=3, suppress=True, linewidth=100000):
+                    # print(f"n: {n}, steps: {steps}")
+                    print("Theta A:\n ", thetaA)
+                    print("Theta B:\n ", thetaB)
+
+        if record_results:
+            np.save("predictions.npy", np.array(preds))
+            np.save("pred_errors.npy", np.array(dLQR.pred_errors))
+            np.save("pred_thetas.npy", np.array(dLQR.pred_thetas))
         env.close()
         return dLQR.K, dLQR.theta
 
     def fedCE_iteration(self, env, dLQR, START, steps, n, k=2, do_warmup=True, random_warmup=True, do_lemniscate=False,
                         do_print=False):
+        PYB_CLIENT = env.getPyBulletClient()
         Texp = n * k
-        Tce = n * (k ** 3)
+        # put a cap on Texp to be 20*k
+        if Texp > 20 * k:
+            Texp = 20 * k
+        # Tce = k * (n ** 3)
+        Tce = k*n*2
+
         Tw = 0
         if do_warmup:
             Tw = 25  # some small warmup
@@ -169,7 +201,13 @@ class GeometricEnv:
                 # since we have a setpoint, we must calculate the error state to learn theta
                 action[j, :] = act
                 phis.append(np.hstack([e, u]))  # use error state as input state to update phi
+                # Apply wind to all drones
 
+            for i in range(args.num_drones):
+                p.applyExternalForce(env.DRONE_IDS[i],
+                                     -1,  # -1 for the base, 0-3 for the motors
+                                     forceObj=[wind_force, 0, 0],  # a force vector
+                                     posObj=[0, 0, 0], flags=p.WORLD_FRAME, physicsClientId=PYB_CLIENT)
             obs, _, _, _, _ = env.step(action)
 
             self.obs = obs
@@ -192,8 +230,8 @@ class GeometricEnv:
 
             # update the theta and V values
             if i != 0:  # skip first because the control input was not applied
-                dLQR.theta_update(phis, e_tp1s)
-                # dLQR.approx_theta_update(phis, e_tp1s)
+                # dLQR.theta_update2(phis, e_tp1s)
+                dLQR.approx_theta_update(phis, e_tp1s)
 
             if do_print:
                 env.render()
@@ -222,7 +260,11 @@ class GeometricEnv:
                                                     self.TARGET_POSITIONS[j, :]])
 
             action, u = dLQR.compute(obs)
-
+            for i in range(args.num_drones):
+                p.applyExternalForce(env.DRONE_IDS[i],
+                                     -1,  # -1 for the base, 0-3 for the motors
+                                     forceObj=[wind_force, 0, 0],  # a force vector
+                                     posObj=[0, 0, 0], flags=p.WORLD_FRAME, physicsClientId=PYB_CLIENT)
             obs, _, _, _, _ = env.step(action)
             t += env.CTRL_TIMESTEP
             if do_print:
@@ -256,6 +298,11 @@ class GeometricEnv:
                 action[j, :] = act
                 phis.append(np.hstack([e, u]))  # use error state as input state to update phi
 
+            for i in range(args.num_drones):
+                p.applyExternalForce(env.DRONE_IDS[i],
+                                     -1,  # -1 for the base, 0-3 for the motors
+                                     forceObj=[wind_force, 0, 0],  # a force vector
+                                     posObj=[0, 0, 0], flags=p.WORLD_FRAME, physicsClientId=PYB_CLIENT)
             obs, _, _, _, _ = env.step(action)
 
             for j in range(args.num_drones):
@@ -267,8 +314,8 @@ class GeometricEnv:
 
             # update the theta and V values
             if i != 0:  # skip first because the control input was different
-                dLQR.theta_update(phis, e_tp1s)
-                # dLQR.approx_theta_update(phis, e_tp1s)
+                # dLQR.theta_update2(phis, e_tp1s)
+                dLQR.approx_theta_update(phis, e_tp1s)
 
             t += env.CTRL_TIMESTEP
             if do_print:
@@ -329,7 +376,7 @@ class GeometricEnv:
                 e_tp1s.append(e_tp1)
 
             # update the theta and V values
-            dLQR.theta_update(phis, e_tp1s)
+            dLQR.theta_update2(phis, e_tp1s)
 
             env.render()
             sync(i, START, env.CTRL_TIMESTEP)
@@ -354,11 +401,10 @@ class GeometricEnv:
         dLQR.compute_controller()
         return dLQR.K, dLQR.theta
 
-    def do_control(self, trajs=None, render=False):
+    def do_control(self, trajs=None, render=False, use_noisy_model=False):
         env = self.env
         args = self.args
         # for information about collecting a dataset using similar code, see https://github.com/altwaitan/DL4IO/blob/main/examples/pybullet/data_collection.py
-        PYB_CLIENT = env.getPyBulletClient()
         PYB_CLIENT = env.getPyBulletClient()
         DRONE_IDS = env.getDroneIds()
         env._showDroneLocalAxes(0)
@@ -376,7 +422,7 @@ class GeometricEnv:
                         geo_ctrl = GeometricControl(env)
                         ctrl.append(geo_ctrl)
                     if args.controller == 'lqr':
-                        lqr_ctrl = LQRController(env, self.linear_models[i])
+                        lqr_ctrl = LQRController(env, self.linear_models[i], use_noisy_model=use_noisy_model)
                         ctrl.append(lqr_ctrl)
 
         # Run the simulation
@@ -413,9 +459,11 @@ class GeometricEnv:
             if args.controller == 'dlqr':
                 action, u = ctrl[0].compute(obs)
 
-            p.applyExternalForce(env.DRONE_IDS[0],
+            # Apply wind to all drones
+            for i in range(args.num_drones):
+                p.applyExternalForce(env.DRONE_IDS[i],
                                  -1,  # -1 for the base, 0-3 for the motors
-                                 forceObj=[.001, 0, 0],  # a force vector
+                                 forceObj=[wind_force, 0, 0],  # a force vector
                                  posObj=[0, 0, 0], flags=p.WORLD_FRAME, physicsClientId=PYB_CLIENT)
 
             obs, _, _, _, _ = env.step(action)
@@ -459,8 +507,8 @@ class GeometricEnv:
         self.INIT_XYZS = np.zeros((args.num_drones, 3))
 
         for i in range(1, args.num_drones):  # first drone starts at (0,0,0) so don't initialize on circle
-            self.INIT_XYZS[i, 0] = args.init_rad * np.cos((i / args.num_drones) * 2 * np.pi)
-            self.INIT_XYZS[i, 1] = args.init_rad * np.sin((i / args.num_drones) * 2 * np.pi)
+            self.INIT_XYZS[i, 0] = args.init_rad * np.sin(((i-1) / args.num_drones) * 2 * np.pi)
+            self.INIT_XYZS[i, 1] = args.init_rad * np.cos(((i-1) / args.num_drones) * 2 * np.pi)
             self.INIT_XYZS[i, 2] = 0.0
 
         # initialize the target positions and orientations to just be a vertical offset of starting positions
@@ -480,24 +528,30 @@ class GeometricEnv:
 if __name__ == "__main__":
     ARGS = parse_args()
     geo = GeometricEnv(ARGS, circle_init=True)
-    env = geo.create_env()
-    trajs = [Lemniscate(center=np.array([0, 0, .5]), omega=1, yaw_rate=.1) for _ in range(ARGS.num_drones)]
-    geo.do_control(trajs=trajs, render=True)
-    exit()
+    env = geo.create_env(gui=True)
+    # trajs = [Lemniscate(center=np.array([0, 0, .5]), omega=1, yaw_rate=.1) for _ in range(ARGS.num_drones)]
+    # geo.do_control(trajs=trajs, render=True)
+    # exit()
     # computed_K, theta = geo.warm_up_only()
-    computed_K, theta = geo.fedCE(num_iter=100)
-    geo.args.controller = 'dlqr'
-    env = geo.create_env()
-    # traj = Lemniscate(center=np.array([0, 0, .5]), omega=0.5, yaw_rate=0.2)
-    delta = np.array([0, 5, 0])
-    delta2 = np.array([0, 5, 0])
-    trajs = [CompoundTrajectory([LineTrajectory(start=geo.INIT_XYZS[idx], end=geo.TARGET_POSITIONS[idx], speed=.5),
-                                 WaitTrajectory(duration=1, position=geo.TARGET_POSITIONS[idx]),
-                                 LineTrajectory(start=geo.TARGET_POSITIONS[idx],
-                                                end=geo.TARGET_POSITIONS[idx] + delta,
-                                                speed=1),
-                                 LineTrajectory(start=(geo.TARGET_POSITIONS[idx] + delta),
-                                                end=(geo.TARGET_POSITIONS[idx]), speed=1)])
-             for idx in range(ARGS.num_drones)]
-    geo.do_control(trajs=trajs)
-    np.save("observations2.npy", geo.observations)
+    # computed_K, theta = geo.fedCE(num_iter=50, record_results=True)
+    # # exit()
+    # geo.args.controller = 'dlqr'
+    # env = geo.create_env(record=False, gui=True)
+    trajs = [Lemniscate(center=np.array([0, 0, .5]), omega=1.5, yaw_rate=0.0, phase_shift=(-np.pi/4)*(num-1)) for num in range(ARGS.num_drones)]
+    # delta = np.array([0, 5, 0])
+    # delta2 = np.array([0, 5, 0])
+    # trajs = [CompoundTrajectory([LineTrajectory(start=geo.INIT_XYZS[idx], end=geo.TARGET_POSITIONS[idx], speed=.5),
+    #                              WaitTrajectory(duration=1, position=geo.TARGET_POSITIONS[idx]),
+    #                              LineTrajectory(start=geo.TARGET_POSITIONS[idx],
+    #                                             end=geo.TARGET_POSITIONS[idx] + delta,
+    #                                             speed=1),
+    #                              LineTrajectory(start=(geo.TARGET_POSITIONS[idx] + delta),
+    #                                             end=(geo.TARGET_POSITIONS[idx]), speed=1)])
+    #          for idx in range(ARGS.num_drones)]
+    geo.do_control(trajs=trajs, use_noisy_model=True)
+    if geo.args.controller == 'dlqr':
+        np.save("wind_observations_lem_learned.npy", geo.observations)
+        print("Wrote observations to observations_lem_learned.npy")
+    else:
+        np.save("wind_observations_lem_bad_mass.npy", geo.observations)
+        print("Wrote observations to observations_lem_bad_mass.npy")

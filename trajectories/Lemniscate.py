@@ -13,11 +13,12 @@ class TrajectoryBase:
 
 class Lemniscate(TrajectoryBase):
 
-    def __init__(self, a=1, omega=.5, center=np.array([0,0,0]), yaw_rate=0, revolutions=None, duration=None):
+    def __init__(self, a=1, omega=.5, center=np.array([0,0,0]), yaw_rate=0, revolutions=None, duration=None, phase_shift=0):
         self.a = a
         self.omega = omega
         self.center = center
         self.yaw_rate = yaw_rate
+        self.phase_shift = phase_shift
 
         if revolutions is not None:
             self.total_time = 2*np.pi*revolutions/omega
@@ -32,7 +33,8 @@ class Lemniscate(TrajectoryBase):
         pos = np.zeros(3)
         vel = np.zeros(3)
         acc = np.zeros(3)
-        th = t * self.omega
+        th = t * self.omega + self.phase_shift #phase shift smoothly changes from 0 to 2pi based on phase shift
+
         # target_position.x() = center.x() + (a * sin(th) * cos(th)) / (1 + sin(th) * sin(th));
         # target_position.y() = center.y() + (a * cos(th)) / (1 + sin(th) * sin(th));
         # target_position.z() = center.z() + 0;

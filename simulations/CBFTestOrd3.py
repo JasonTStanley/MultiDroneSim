@@ -20,15 +20,15 @@ from utils import obs_to_lin_model
 
 DEFAULT_DRONES = DroneModel("cf2p")
 DEFAULT_PHYSICS = Physics("pyb")
-DEFAULT_GUI = True  # usually true
+DEFAULT_GUI = False  # usually true
 DEFAULT_PLOT = False  # usually true
 DEFAULT_RECORD = False
 DEFAULT_USER_DEBUG_GUI = False
-DEFAULT_SIMULATION_FREQ_HZ = 240
-DEFAULT_CONTROL_FREQ_HZ = 240
-DEFAULT_DURATION_SEC = 50
+DEFAULT_SIMULATION_FREQ_HZ = 100
+DEFAULT_CONTROL_FREQ_HZ = 100
+DEFAULT_DURATION_SEC = 20
 DEFAULT_OUTPUT_FOLDER = 'results'
-DEFAULT_NUM_DRONES = 2  # 2
+DEFAULT_NUM_DRONES = 7
 controllers = ['lqr', 'geometric']  # whichever is first will be default
 
 
@@ -64,7 +64,8 @@ def parse_args():
 
 
 class GeometricEnv:
-    def __init__(self, args, circle_init=True):
+    init_types = ['circle', 'lemniscate']
+    def __init__(self, args, init_type='circle', lemniscate_a=1, center=np.array([0, 0, 0])):
         self.env = None
         self.obs = None
         self.conversion_mat = None
@@ -76,10 +77,17 @@ class GeometricEnv:
         self.TARGET_RPYS = np.zeros((args.num_drones, 3))
         self.obs_ts = []
         self.linear_models = None
+        self.init_type = init_type
+        self.lemniscate_a = lemniscate_a
+        self.center = center
 
-        if circle_init:
+        if init_type == 'circle':
             self.starting_target_offset = 1  # initial goal is just 1m above start pose
             self.circle_initialize()
+        elif init_type == 'lemniscate':
+            self.starting_target_offset = 1
+            self.lemniscate_initialize()
+
 
     def create_env(self, gui=True):
         args = self.args
@@ -91,6 +99,7 @@ class GeometricEnv:
                          pyb_freq=args.simulation_freq_hz,
                          ctrl_freq=args.control_freq_hz,
                          gui=args.gui and gui,
+                         record=True,
                          user_debug_gui=args.user_debug_gui,
                          output_folder=args.output_folder
                          )
@@ -353,6 +362,7 @@ class GeometricEnv:
                 print(f"Action: {action}")
                 env.render()
             sync(i, START, env.CTRL_TIMESTEP)
+
         # Close the environment
         env.close()
 
@@ -377,15 +387,19 @@ class GeometricEnv:
 
         return x_dot
 
-    def circle_initialize(self):
+    def lemniscate_initialize(self):
         args = self.args
         # initialize the drones in a circle with radius args.init_rad centered around the first drone at (0,0,0)
         self.INIT_XYZS = np.zeros((args.num_drones, 3))
 
-        for i in range(1, args.num_drones):  # first drone starts at (0,0,0) so don't initialize on circle
-            self.INIT_XYZS[i, 0] = args.init_rad * np.cos((i / args.num_drones) * 2 * np.pi)
-            self.INIT_XYZS[i, 1] = args.init_rad * np.sin((i / args.num_drones) * 2 * np.pi)
-            self.INIT_XYZS[i, 2] = 0.0
+        for i in range(0, args.num_drones):
+            #create a lemniscate and get the 0 time position
+            #make the phase shift some reasonable amount in the future,
+            lem_i = Lemniscate(center=self.center, phase_shift=(2*np.pi / (args.num_drones + 0.25)) * i)
+            pos, vel, acc, yaw, omega = lem_i(0)
+            self.INIT_XYZS[i, 0] = pos[0]
+            self.INIT_XYZS[i, 1] = pos[1]
+            self.INIT_XYZS[i, 2] = pos[2]
 
         # initialize the target positions and orientations to just be a vertical offset of starting positions
 
@@ -398,7 +412,30 @@ class GeometricEnv:
         for i in range(args.num_drones):
             self.TARGET_RPYS[i, 0] = 0
             self.TARGET_RPYS[i, 1] = 0
-            self.TARGET_RPYS[i, 2] = np.pi / 2
+            self.TARGET_RPYS[i, 2] = 0
+
+    def circle_initialize(self):
+        args = self.args
+        # initialize the drones in a circle with radius args.init_rad centered around the first drone at (0,0,0)
+        self.INIT_XYZS = np.zeros((args.num_drones, 3))
+
+        for i in range(1, args.num_drones):  # first drone starts at (0,0,0) so don't initialize on circle
+            self.INIT_XYZS[i, 0] = args.init_rad * np.cos((i / args.num_drones) * 2 * np.pi) + self.center[0]
+            self.INIT_XYZS[i, 1] = args.init_rad * np.sin((i / args.num_drones) * 2 * np.pi) + self.center[1]
+            self.INIT_XYZS[i, 2] = self.center[2]
+
+        # initialize the target positions and orientations to just be a vertical offset of starting positions
+
+        for i in range(args.num_drones):
+            self.INIT_RPYS[i, 2] = 0
+            self.TARGET_POSITIONS[i, 0] = self.INIT_XYZS[i, 0]
+            self.TARGET_POSITIONS[i, 1] = self.INIT_XYZS[i, 1]
+            self.TARGET_POSITIONS[i, 2] = self.INIT_XYZS[i, 2] + self.starting_target_offset
+
+        for i in range(args.num_drones):
+            self.TARGET_RPYS[i, 0] = 0
+            self.TARGET_RPYS[i, 1] = 0
+            self.TARGET_RPYS[i, 2] = 0
 
 def add_env_obstacles(env, x_obs_list, obs_r_list):
     for i in range(len(x_obs_list)):
@@ -409,18 +446,21 @@ def add_env_obstacles(env, x_obs_list, obs_r_list):
 
 if __name__ == "__main__":
     ARGS = parse_args()
-    geo = GeometricEnv(ARGS, circle_init=True)
+    geo = GeometricEnv(ARGS, init_type='lemniscate', lemniscate_a=1)
     env = geo.create_env()
     # trajs = [WaitTrajectory(duration=20, position=geo.TARGET_POSITIONS[j]) for j in range(ARGS.num_drones)]
-    trajs = [Lemniscate(center=np.array([0, 0, 0.5 + .25*_]), omega=0.5, yaw_rate=0) for _ in range(ARGS.num_drones)]
-    droneCBF = DroneCBF(env, geo.linear_models, safety_radius=0.25, zscale=1, order=3, cbf_poles=np.array([-5.2, -5.4, -5.6]))
+    trajs = [Lemniscate(a=1, center=np.array([0, 0 , 0.5]), omega=0.5, yaw_rate=0, phase_shift=(2*np.pi/(ARGS.num_drones + 0.25)) * num) for num in range(ARGS.num_drones)]
+    # droneCBF = DroneCBF(env, geo.linear_models, safety_radius=0.25, zscale=1.5, order=3, cbf_poles=np.array([-2.2, -3.4, -5.6]))
+    droneCBF = DroneCBF(env, geo.linear_models, safety_radius=0.125, zscale=2, order=3, cbf_poles=np.array([-3.0, -3.6, -5.6]))
     droneTracker = DroneQPTracker(droneCBF, num_robots=ARGS.num_drones, xdim=10, env=env, order=3)
-    x_obs_list = np.array([
-        np.array([[0, 0, .5], np.zeros(3), np.zeros(3)]),
-    ])
-    obs_r_list = [.1, ]
-    add_env_obstacles(env, x_obs_list, obs_r_list)
-    geo.do_control(trajs=trajs, qpTracker=droneTracker, render=False, computed_K=None, use_noisy_model=False,
+    # x_obs_list = np.array([
+    #     np.array([[0, 0, .5], np.zeros(3), np.zeros(3)]),
+    # ])
+    # obs_r_list = [.1, ]
+    x_obs_list=None
+    obs_r_list=None
+    # add_env_obstacles(env, x_obs_list, obs_r_list)
+    geo.do_control(trajs=trajs, qpTracker=droneTracker, render=True, computed_K=None, use_noisy_model=False,
                    x_obs_list=x_obs_list, obs_r_list=obs_r_list)
     exit()
 

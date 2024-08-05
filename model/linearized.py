@@ -68,12 +68,15 @@ class LinearizedModel:
 
         #initialize Ahat and Bhat to be a slight permutation of A and B
         self.Ahat = self.A.copy()
-        self.Ahat[6, 1] = self.g*0.9
-        self.Ahat[7, 0] = -self.g*0.9
+        self.Ahat[6, 1] = self.g
+        self.Ahat[7, 0] = -self.g
 
         self.Bhat = self.B.copy()
-        self.Bhat[3:6, 1:] = np.array([[1 / self.Ixx, 0, 0], [0, 1 / self.Iyy, 0], [0, 0, 1 / self.Izz]]) * 1.1
-        self.Bhat[8, 0] = (1.0 / self.mass) * 1.1
+        # self.Bhat[3:6, 1:] = np.array([[1 / self.Ixx, 0, 0], [0, 1 / self.Iyy, 0], [0, 0, 1 / self.Izz]]) * 1.15
+        # self.Bhat[8, 0] = (1.0 / self.mass) * 1.25
+
+        self.Bhat[3:6, 1:] = np.array([[1 / self.Ixx, 0, 0], [0, 1 / self.Iyy, 0], [0, 0, 1 / self.Izz]]) * 0.75
+        self.Bhat[8, 0] = (1.0 / (self.mass * .75))
 
 
 

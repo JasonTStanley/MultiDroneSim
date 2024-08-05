@@ -41,7 +41,6 @@ class LinearizedYankOmegaModel:
 
     def init_matrices(self):
         self.A[7:, 4:7] = np.eye(3)
-
         self.A[4, 1] = self.g
         self.A[5, 0] = -self.g
         self.A[6,3] = 1.0 / self.mass # vz dot = 1/mass * F

@@ -107,6 +107,21 @@ class DecentralizedLQROmega(BaseController):
                 1 / 2.0) * Ahat @ Bhat @ u * self.env.CTRL_TIMESTEP ** 2
         return xtp1
 
+    def theta_update2(self, phis, xtp1s):
+        for i in range(self.num_robots):
+            x_tp1 = xtp1s[i].reshape((self.m, 1))
+            phi = phis[i].reshape((self.mn, 1))
+
+            Vi = self.P[i] #strange naming for now, its fine
+            invVi = np.linalg.inv(Vi)
+
+            th_i = self.get_thetai(i)
+            pred_xtp1 = self.forward_predict(x_tp1.flatten(), phi[-self.n:].flatten(), i)
+
+            theta_new = th_i + invVi @ phi @ (x_tp1.T - pred_xtp1)
+            self.overwrite_theta(theta_new, i)
+            self.P[i] = Vi + phi@phi.T
+
     def theta_update(self, phis, xtp1s):
         for i in range(self.num_robots):
             x_tp1 = xtp1s[i].reshape((self.m, 1))
@@ -122,7 +137,6 @@ class DecentralizedLQROmega(BaseController):
             theta_new = th_i + L @ (x_tp1.T - pred_xtp1)
             self.overwrite_theta(theta_new, i)
             self.P[i] = (np.eye(self.mn) - L @ phi.T) @ P  # update P
-
     def sigma1(self):
         # draw a random input force and thrust, ensure that the input is within the bounds
         thrust = np.random.uniform(.7 * self.env.M * self.env.G, 1.5 * self.env.M * self.env.G)

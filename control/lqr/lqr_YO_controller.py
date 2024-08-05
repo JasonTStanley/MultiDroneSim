@@ -119,3 +119,6 @@ class LQRYankOmegaController(BaseController):
     def cap_u(self, u):
         #potentially cap the max Yank
         pass
+
+    def get_yank(self):
+        return

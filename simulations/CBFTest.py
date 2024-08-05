@@ -20,13 +20,13 @@ from utils import obs_to_lin_model
 
 DEFAULT_DRONES = DroneModel("cf2p")
 DEFAULT_PHYSICS = Physics("pyb")
-DEFAULT_GUI = True  # usually true
+DEFAULT_GUI = False  # usually true
 DEFAULT_PLOT = False  # usually true
-DEFAULT_RECORD = False
+DEFAULT_RECORD = True
 DEFAULT_USER_DEBUG_GUI = False
 DEFAULT_SIMULATION_FREQ_HZ = 100
 DEFAULT_CONTROL_FREQ_HZ = 100
-DEFAULT_DURATION_SEC = 50
+DEFAULT_DURATION_SEC = 20
 DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_NUM_DRONES = 2  # 2
 controllers = ['lqr', 'geometric']  # whichever is first will be default
@@ -43,6 +43,8 @@ def parse_args():
                         help='Physics updates (default: PYB)', metavar='', choices=Physics)
     parser.add_argument('--gui', default=DEFAULT_GUI, type=str2bool,
                         help='Whether to use PyBullet GUI (default: True)', metavar='')
+    parser.add_argument('--record', default=DEFAULT_RECORD, type=str2bool,
+                        help='Whether to record PyBullet simulation (default: false)', metavar='')
     parser.add_argument('--plot', default=DEFAULT_PLOT, type=str2bool,
                         help='Whether to plot the simulation results (default: True)', metavar='')
     parser.add_argument('--user_debug_gui', default=DEFAULT_USER_DEBUG_GUI, type=str2bool,
@@ -90,6 +92,7 @@ class GeometricEnv:
                          physics=args.physics,
                          pyb_freq=args.simulation_freq_hz,
                          ctrl_freq=args.control_freq_hz,
+                         record=args.record,
                          gui=args.gui and gui,
                          user_debug_gui=args.user_debug_gui,
                          output_folder=args.output_folder
@@ -412,13 +415,13 @@ if __name__ == "__main__":
     geo = GeometricEnv(ARGS, circle_init=True)
     env = geo.create_env()
     # trajs = [WaitTrajectory(duration=20, position=geo.TARGET_POSITIONS[j]) for j in range(ARGS.num_drones)]
-    trajs = [Lemniscate(center=np.array([0, 0, 0.25 + .25*_]), omega=0.5, yaw_rate=0) for _ in range(ARGS.num_drones)]
+    trajs = [Lemniscate(center=np.array([0, 0, 0.5]), omega=0.5, yaw_rate=0) for _ in range(ARGS.num_drones)]
     droneCBF = DroneCBF(env, geo.linear_models, safety_radius=0.1, zscale=1)
     droneTracker = DroneQPTracker(droneCBF, num_robots=ARGS.num_drones)
     x_obs_list = np.array([
         np.array([[0, 0, .5], np.zeros(3)]),
     ])
-    obs_r_list = [.1, ]
+    obs_r_list = [.1,]
     add_env_obstacles(env, x_obs_list, obs_r_list)
     geo.do_control(trajs=trajs, qpTracker=droneTracker, render=False, computed_K=None, use_noisy_model=False,
                    x_obs_list=x_obs_list, obs_r_list=obs_r_list)
@@ -430,8 +433,8 @@ if __name__ == "__main__":
     # exit()
     # computed_K, theta = geo.warm_up_only()
     computed_K, theta = geo.fedCE(num_iter=20)
-    geo.args.controller = 'dlqr'
     env = geo.create_env()
+    geo.args.controller = 'dlqr'
     # traj = Lemniscate(center=np.array([0, 0, .5]), omega=0.5, yaw_rate=0.2)
     delta = np.array([0, 5, 0])
     delta2 = np.array([0, 5, 0])
