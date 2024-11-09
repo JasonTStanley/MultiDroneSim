@@ -22,5 +22,3 @@ To check that the project is setup properly, run the following command:
 python MultiDroneExample.py
 ```
 This should open a window with a 3D environment with two drones hovering off the ground.
-
-Modification from multi-drone-sim
