@@ -10,28 +10,34 @@ from utils.model_conversions import obs_to_lin_model
 
 
 class LQRYankOmegaController(BaseController):
-    def __init__(self, env, lin_model: LinearizedYankOmegaModel, yo_controller: YankOmegaController, debug=False, use_noisy_model=False):
+
+    def __init__(self, env, lin_model: LinearizedYankOmegaModel, yo_controller: YankOmegaController, debug=False, use_noisy_model=False, Q=None, R=None):
         super().__init__(env)
         self.yo_controller = yo_controller
-        # Brysons rule, essentially set Rii to be 1/(u^2_i) where u_i is the max input for the ith value)
 
-        max_yank = (env.MAX_THRUST / env.CTRL_TIMESTEP ) / 200 # guess? don't have an intuition for yank yet
+        if R is None:
+            # Brysons rule, essentially set Rii to be 1/(u^2_i) where u_i is the max input for the ith value)
 
-        max_pitch_roll_rate_error = 0.1
-        max_yaw_rate_error = 0.1
-        rflat = [1 / (max_yank ** 2), 1 / (max_pitch_roll_rate_error ** 2), 1 / (max_pitch_roll_rate_error ** 2),
-                 1 / (max_yaw_rate_error ** 2)]
-        R = np.diag(rflat)
-        max_vel_error = .15
-        max_pos_error = .05
-        max_yaw_error = np.pi / 40
-        max_pitch_roll_error = np.pi / 20
-        max_thrust = env.MAX_THRUST - env.M* env.G #max thrust in equilibrium input
-        # stack into Q in order of state x=[r, p, y, T, vx, vy, vz, px, py, pz] (T is thrust)
-        qflat = [1 / (max_pitch_roll_error ** 2), 1 / (max_pitch_roll_error ** 2), 1 / (max_yaw_error ** 2),
-                 1/(max_thrust**2), 1 / (max_vel_error ** 2), 1 / (max_vel_error ** 2), 1 / (max_vel_error ** 2),
-                 1 / (max_pos_error ** 2), 1 / (max_pos_error ** 2), 1 / (max_pos_error ** 2)]
-        Q = np.diag(qflat)
+            max_yank = (env.MAX_THRUST / env.CTRL_TIMESTEP ) / 200 # guess? don't have an intuition for yank yet
+
+            max_pitch_roll_rate_error = 0.1
+            max_yaw_rate_error = 0.1
+            rflat = [1 / (max_yank ** 2), 1 / (max_pitch_roll_rate_error ** 2), 1 / (max_pitch_roll_rate_error ** 2),
+                    1 / (max_yaw_rate_error ** 2)]
+            R = np.diag(rflat)
+        
+        if Q is None:
+            max_vel_error = .15
+            max_pos_error = .05
+            max_yaw_error = np.pi / 40
+            max_pitch_roll_error = np.pi / 20
+            max_thrust = env.MAX_THRUST - env.M* env.G #max thrust in equilibrium input
+            # stack into Q in order of state x=[r, p, y, T, vx, vy, vz, px, py, pz] (T is thrust)
+            qflat = [1 / (max_pitch_roll_error ** 2), 1 / (max_pitch_roll_error ** 2), 1 / (max_yaw_error ** 2),
+                    1/(max_thrust**2), 1 / (max_vel_error ** 2), 1 / (max_vel_error ** 2), 1 / (max_vel_error ** 2),
+                    1 / (max_pos_error ** 2), 1 / (max_pos_error ** 2), 1 / (max_pos_error ** 2)]
+            Q = np.diag(qflat)
+
 
         self.lin_model = lin_model
         self.Q = Q
@@ -91,8 +97,9 @@ class LQRYankOmegaController(BaseController):
 
         return action
 
-    def compute(self, obs, skip_low_level=False):
-        x = obs_to_lin_model(obs, dim=10, env=self.env)
+    def compute(self, obs=None, x=None, skip_low_level=False):
+        if obs is not None:
+            x = obs_to_lin_model(obs, dim=10, env=self.env)
         # drop angular velocity from the state
 
         e = np.copy(x)
@@ -110,7 +117,7 @@ class LQRYankOmegaController(BaseController):
         e[4:7] = R_eq.T @ (x[4:7] - self.desired_vel)
 
         u = -self.K @ e
-        if skip_low_level:
+        if skip_low_level or obs is None:
             return None, u
         action = self.compute_low_level(u,obs)
         # action = input_to_action(self.env, u)
