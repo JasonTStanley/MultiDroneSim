@@ -23,4 +23,4 @@ python MultiDroneExample.py
 ```
 This should open a window with a 3D environment with two drones hovering off the ground.
 
-Modification on branch
+Modification from multi-drone-sim
