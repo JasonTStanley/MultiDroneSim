@@ -1,4 +1,4 @@
-## MultiDroneSim
+# MultiDroneSim
 This repository uses the gym-pybullet-drones library to simulate multiple drones in a 3D environment.
 
 To setup this project, we recommend creating a new conda environment from the environment.yaml file as follows:
@@ -22,3 +22,5 @@ To check that the project is setup properly, run the following command:
 python MultiDroneExample.py
 ```
 This should open a window with a 3D environment with two drones hovering off the ground.
+
+Modification on branch
