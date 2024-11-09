@@ -101,7 +101,7 @@ class LQRYankOmegaController(BaseController):
         if obs is not None:
             x = obs_to_lin_model(obs, dim=10, env=self.env)
         # drop angular velocity from the state
-
+        x = x.reshape((10,))
         e = np.copy(x)
 
         # equilibrium is at the desired yaw
