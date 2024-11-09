@@ -2,6 +2,7 @@
 # https://github.com/d-biswa/Symplectic-ODENet/blob/master/experiment-single-embed/data.py
 
 import argparse
+import os
 import time
 import pybullet as p
 from gym_pybullet_drones.envs.BaseAviary import DroneModel, Physics
@@ -18,9 +19,11 @@ from trajectories import *
 from cbf import DroneQPTracker, DroneCBF
 from utils import obs_to_lin_model
 
+print(os.environ['PYTHONPATH'])
+exit()
 DEFAULT_DRONES = DroneModel("cf2p")
 DEFAULT_PHYSICS = Physics("pyb")
-DEFAULT_GUI = False  # usually true
+DEFAULT_GUI = True  # usually true
 DEFAULT_PLOT = False  # usually true
 DEFAULT_RECORD = False
 DEFAULT_USER_DEBUG_GUI = False
@@ -99,7 +102,7 @@ class GeometricEnv:
                          pyb_freq=args.simulation_freq_hz,
                          ctrl_freq=args.control_freq_hz,
                          gui=args.gui and gui,
-                         record=True,
+                         record=DEFAULT_RECORD,
                          user_debug_gui=args.user_debug_gui,
                          output_folder=args.output_folder
                          )

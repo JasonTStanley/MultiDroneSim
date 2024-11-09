@@ -31,7 +31,8 @@ DEFAULT_DURATION_SEC = 30
 DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_NUM_DRONES = 2  # 2
 controllers = ['lqr', 'geometric']  # whichever is first will be default
-wind_force = .00025
+# wind_force = .00025
+wind_force = 0
 
 def parse_args():
     #### Define and parse (optional) arguments for the script ##
@@ -203,11 +204,12 @@ class GeometricEnv:
                 phis.append(np.hstack([e, u]))  # use error state as input state to update phi
                 # Apply wind to all drones
 
-            for i in range(args.num_drones):
-                p.applyExternalForce(env.DRONE_IDS[i],
+            for j in range(args.num_drones):
+                p.applyExternalForce(env.DRONE_IDS[j],
                                      -1,  # -1 for the base, 0-3 for the motors
                                      forceObj=[wind_force, 0, 0],  # a force vector
                                      posObj=[0, 0, 0], flags=p.WORLD_FRAME, physicsClientId=PYB_CLIENT)
+
             obs, _, _, _, _ = env.step(action)
 
             self.obs = obs
@@ -231,7 +233,8 @@ class GeometricEnv:
             # update the theta and V values
             if i != 0:  # skip first because the control input was not applied
                 # dLQR.theta_update2(phis, e_tp1s)
-                dLQR.approx_theta_update(phis, e_tp1s)
+                # dLQR.approx_theta_update(phis, e_tp1s)
+                dLQR.approx_theta_update2(phis, e_tp1s)
 
             if do_print:
                 env.render()
@@ -298,8 +301,8 @@ class GeometricEnv:
                 action[j, :] = act
                 phis.append(np.hstack([e, u]))  # use error state as input state to update phi
 
-            for i in range(args.num_drones):
-                p.applyExternalForce(env.DRONE_IDS[i],
+            for j in range(args.num_drones):
+                p.applyExternalForce(env.DRONE_IDS[j],
                                      -1,  # -1 for the base, 0-3 for the motors
                                      forceObj=[wind_force, 0, 0],  # a force vector
                                      posObj=[0, 0, 0], flags=p.WORLD_FRAME, physicsClientId=PYB_CLIENT)
@@ -315,7 +318,8 @@ class GeometricEnv:
             # update the theta and V values
             if i != 0:  # skip first because the control input was different
                 # dLQR.theta_update2(phis, e_tp1s)
-                dLQR.approx_theta_update(phis, e_tp1s)
+                # dLQR.approx_theta_update(phis, e_tp1s)
+                dLQR.approx_theta_update2(phis, e_tp1s)
 
             t += env.CTRL_TIMESTEP
             if do_print:
@@ -460,8 +464,8 @@ class GeometricEnv:
                 action, u = ctrl[0].compute(obs)
 
             # Apply wind to all drones
-            for i in range(args.num_drones):
-                p.applyExternalForce(env.DRONE_IDS[i],
+            for j in range(args.num_drones):
+                p.applyExternalForce(env.DRONE_IDS[j],
                                  -1,  # -1 for the base, 0-3 for the motors
                                  forceObj=[wind_force, 0, 0],  # a force vector
                                  posObj=[0, 0, 0], flags=p.WORLD_FRAME, physicsClientId=PYB_CLIENT)
@@ -533,10 +537,10 @@ if __name__ == "__main__":
     # geo.do_control(trajs=trajs, render=True)
     # exit()
     # computed_K, theta = geo.warm_up_only()
-    # computed_K, theta = geo.fedCE(num_iter=50, record_results=True)
+    computed_K, theta = geo.fedCE(num_iter=25, record_results=True)
     # # exit()
-    # geo.args.controller = 'dlqr'
-    # env = geo.create_env(record=False, gui=True)
+    geo.args.controller = 'dlqr'
+    env = geo.create_env(record=False, gui=True)
     trajs = [Lemniscate(center=np.array([0, 0, .5]), omega=1.5, yaw_rate=0.0, phase_shift=(-np.pi/4)*(num-1)) for num in range(ARGS.num_drones)]
     # delta = np.array([0, 5, 0])
     # delta2 = np.array([0, 5, 0])

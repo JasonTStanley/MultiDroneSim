@@ -68,11 +68,12 @@ class DecentralizedLQR(BaseController):
             # here Ahat is the guess of the A matrix of the linearized model
 
         self.theta = np.hstack([self.Astar, self.Bstar]).T
-        # self.V = np.repeat((.1)*np.eye(16)[:, :, None], self.num_robots, axis=2).transpose(2, 0, 1)
+        self.V = np.repeat((20)*np.eye(16)[:, :, None], self.num_robots, axis=2).transpose(2, 0, 1)
         self.P = np.repeat(20*np.eye(16)[:, :, None], self.num_robots, axis=2).transpose(2, 0, 1)
         # try and
         for i in range(self.num_robots):
             self.P[i][-3:, -3:] = 5_000_000 * np.eye(3)
+            self.V[i][-3:, -3:] = 5_000_000 * np.eye(3)
         self.lqr_controllers = [lqr_controller.LQRController(env, lin_models[i]) for i in range(self.num_robots)]
         self.K = None
         self.desired_positions = np.zeros((self.num_robots, 3))
@@ -125,9 +126,12 @@ class DecentralizedLQR(BaseController):
         Ahat = self.get_thetai(i)[:12, :].T
         Bhat = self.get_thetai(i)[12:, :].T
         I = np.eye(12)
+
         xtp1 = (I + Ahat * self.env.CTRL_TIMESTEP) @ e + Bhat @ u * self.env.CTRL_TIMESTEP + (
                     1 / 2.0) * Ahat @ Bhat @ u * self.env.CTRL_TIMESTEP ** 2
         return xtp1
+
+
 
     def theta_update2(self, phis, xtp1s):
         for i in range(self.num_robots):
@@ -215,6 +219,36 @@ class DecentralizedLQR(BaseController):
             self.project_theta()
             self.P[i] = (np.eye(16) - L @ phi.T) @ P  # update P
 
+            Ahat = self.get_thetai(i)[:12, :].T
+            Bhat = self.get_thetai(i)[12:, :].T
+            self.pred_thetas[i].append(np.hstack([Ahat, Bhat]))
+
+            # pred_gt_xtp1 = self.forward_predict(phi[:-4].flatten(), phi[-4:].flatten(), i, Ahat=self.lin_models[i].A,
+            #                                     Bhat=self.lin_models[i].B)
+            self.pred_errors[i].append(np.linalg.norm(x_dot.T - phi.T @ th_i))
+            th_i_gt = np.hstack([self.lin_models[i].A, self.lin_models[i].B]).T
+            self.pred_errors[i + self.num_robots].append(np.linalg.norm(x_dot.T - phi.T @ th_i_gt))
+    def approx_theta_update2(self, phis, xtp1s):
+        for i in range(self.num_robots):
+            # we need to estimate x_dot from observations of x_tp1 so we regress to the continuous model
+            x_tp1 = xtp1s[i].reshape((12, 1))
+            phi = phis[i].reshape((16, 1))
+            x_dot = self.est_x_dot(x_tp1, phi)  # estimate x_dot
+            V = self.V[i]
+            # P = self.P[i]
+            Vinv = np.linalg.inv(V)
+            # L = P @ phi @ np.linalg.inv(1 + phi.T @ P @ phi)
+            # print("L norm: " + str(np.linalg.norm(L)))
+            th_i = self.get_thetai(i)
+            theta_new = th_i + Vinv @ phi @ (x_dot.T - phi.T @ th_i)
+
+            # update the corresponding parts of theta
+
+            # self.theta[i * 16:(i + 1) * 16, i * 12:(i + 1) * 12] = theta_new
+            self.overwrite_theta(theta_new, i)
+            self.project_theta()
+            # self.P[i] = (np.eye(16) - L @ phi.T) @ P  # update P
+            self.V[i] = V + phi @ phi.T
             Ahat = self.get_thetai(i)[:12, :].T
             Bhat = self.get_thetai(i)[12:, :].T
             self.pred_thetas[i].append(np.hstack([Ahat, Bhat]))
