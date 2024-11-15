@@ -12,7 +12,7 @@ class CircleTrajectory(TrajectoryBase):
         self.yaw_rate = float(yaw_rate)
 
         if revolutions is not None:
-            self.total_time = 2*r*np.pi*revolutions*v
+            self.total_time = 2*r*np.pi*revolutions/self.v
         elif duration is not None:
             self.total_time = duration
         else:
