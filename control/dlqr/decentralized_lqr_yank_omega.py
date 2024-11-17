@@ -3,7 +3,7 @@ import scipy.integrate
 import scipy.linalg as la
 from scipy.spatial.transform import Rotation
 
-from control.lqr import lqr_omega_controller
+from control.lqr import lqr_omega_controller, lqr_YO_controller
 from control.base_controller import BaseController
 from model.linearized import LinearizedModel
 from utils import obs_to_lin_model
@@ -11,7 +11,7 @@ from utils import obs_to_lin_model
 
 class DecentralizedLQRYankOmega(BaseController):
     def __init__(self, env, lin_models: [LinearizedModel], debug=False):
-        from control import ThrustOmegaController as TOC
+        from control import YankOmegaController as YOC
         super().__init__(env)
         # set dimensions of model
         # A is mxm B is mxn, m=9, n=4
@@ -62,14 +62,14 @@ class DecentralizedLQRYankOmega(BaseController):
 
         self.V = np.eye(self.mn * self.num_robots)
         self.P = np.repeat(np.eye(self.mn)[:, :, None], self.num_robots, axis=2).transpose(2, 0, 1)
-        self.lqr_controllers = [lqr_omega_controller.LQROmegaController(env, lin_models[i], TOC(env))
+        self.lqr_controllers = [lqr_YO_controller.LQRYankOmegaController(env, lin_models[i], YOC(env))
                                 for i in range(self.num_robots)]
         self.K = None
         self.desired_positions = np.zeros((self.num_robots, 3))
         self.desired_vels = np.zeros((self.num_robots, 3))
         self.desired_yaws = np.zeros(self.num_robots)
         self.desired_omegas = np.zeros(self.num_robots)
-        self.low_level_controllers = [ThrustOmegaController(env) for _ in range(self.num_robots)]
+        self.low_level_controllers = [YOC(env) for _ in range(self.num_robots)]
 
     def get_thetai(self, i):
         # need to extract Ai and Bi
@@ -209,8 +209,6 @@ class DecentralizedLQRYankOmega(BaseController):
         u = np.sum(us, axis=0)
 
         u_robot = np.array([u[(n * i):(n * (i + 1))] for i in range(self.num_robots)])
-        # offset by the equilibrium thrust
-        u_robot[:, 0] += self.env.M * self.env.G
         if skip_low_level:
             #Return empty action, let the caller compute the low level control
             return None, u_robot

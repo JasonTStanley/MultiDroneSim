@@ -172,8 +172,6 @@ class GeometricEnv:
                     act, u = dLQR.LQR(obs[j], j, pos=pos, vel=vel, yaw=yaw, omega=omega)
 
 
-                # offset u by the equilibrium point
-                u[0] = u[0] - env.M * env.G  # TODO replace with estimate? and apply for all drones
                 e = dLQR.error_state(x, x_des)
                 # since we have a setpoint, we must calculate the error state to learn theta
                 action[j, :] = act

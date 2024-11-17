@@ -1,9 +1,7 @@
 import math
 
 import numpy as np
-from gym_pybullet_drones.control.BaseControl import BaseControl
 from control.low_level.thrust_omega_ctrl import ThrustOmegaController as TOC
-from gym_pybullet_drones.utils.enums import DroneModel
 from scipy.spatial.transform import Rotation
 from utils.model_conversions import calc_z_thrust
 
@@ -27,7 +25,7 @@ class YankOmegaController():
         self.env = env
         #hover thrust from env
         self.hover_thrust = env.G * env.M
-        self.cur_thrust = 0.0
+        self.cur_thrust = self.hover_thrust
 
     ################################################################################
 
@@ -51,9 +49,9 @@ class YankOmegaController():
     ################################################################################
 
     def yank2thrust(self, yank, control_timestep, cur_thrust):
-        #yank is in N/s
-        #thrust is in N
-        #control_timestep is in seconds
+        # yank is in N/s
+        # thrust is in N
+        # control_timestep is in seconds
         return cur_thrust + yank * control_timestep
 
 
