@@ -7,7 +7,7 @@ from control.dlqr.decentralized_yolqr_crazyflie import DecentralizedYOLQRCrazyfl
 
 class FederatedLearning:
     
-    def __init__(self, lin_models: List[LinearizedYankOmegaModel], env, traj, num_drones=1): 
+    def __init__(self, lin_models: List[LinearizedYankOmegaModel], env, num_drones=1): 
         self.num_drones = num_drones
         self.env = env
         self.traj = traj
@@ -19,7 +19,7 @@ class FederatedLearning:
         self.dLQR = DecentralizedYOLQRCrazyflie(env, self.linear_models)
         self.x_prev = None
 
-    def make_desired_state(self, pos, vel, yaw):
+    def make_desired_state(self, pos=np.zeros(3), vel=np.zeros(3), yaw=0.0):
         #its important that the desired state has thrust = mass * gravity, as this is the equilibrium point
         return YOState(0,0, yaw, self.env.M * self.env.G ,vel[0],vel[1],vel[2],pos[0],pos[1],pos[2])
 
