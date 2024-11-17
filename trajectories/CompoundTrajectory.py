@@ -18,6 +18,11 @@ class CompoundTrajectory(TrajectoryBase):
     def get_total_time(self):
         return self.total_time
 
+    def reset(self):
+        self.trajectory_index = 0
+        self.current_trajectory = self.trajectories[self.trajectory_index]
+        self.current_trajectory_time = 0
+    
     def __call__(self, t):
         if t > self.total_time:
             return self.trajectories[-1](self.trajectories[-1].get_total_time()) # final pose

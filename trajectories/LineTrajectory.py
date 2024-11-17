@@ -12,6 +12,7 @@ class WaitTrajectory(TrajectoryBase):
 
     def __call__(self, t):
         return self.position, np.zeros(3), np.zeros(3), self.yaw, 0
+    
 class LineTrajectory(TrajectoryBase):
     def __init__(self, start: np.ndarray, end: np.ndarray, speed: float = None, duration: float = None, v0=0, vf=0):
         '''

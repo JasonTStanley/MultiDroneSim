@@ -26,8 +26,8 @@ class CircleTrajectory(TrajectoryBase):
         vel = np.zeros(3)
         acc = np.zeros(3)
         
-        yaw = (np.yaw_rate * t - np.pi) % (2*np.pi) + np.pi
-        omega_yaw = np.yaw_rate
+        yaw = (self.yaw_rate * t - np.pi) % (2*np.pi) + np.pi
+        omega_yaw = self.yaw_rate
 
         #we start at center + r,0,0 and rotate around the z axis
         pos[0] = self.center[0] + self.r * cos(self.v/self.r * t)
