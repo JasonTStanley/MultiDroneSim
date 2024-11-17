@@ -27,7 +27,10 @@ class LinearizedYankOmegaModel:
         self.env = env
         self.Ahat = np.zeros((10, 10))
         self.Bhat = np.zeros((10, 4))
+        self.m = 10
+        self.n = 4
         self.init_matrices()
+
 
 
         if debug:
