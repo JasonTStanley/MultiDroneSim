@@ -120,6 +120,7 @@ def geo_model_to_obs(x):
     obs[10:13] = x[12:15]
     obs[13:16] = x[15:]
     return obs
+
 def geo_x_dot_to_linear(geo_xdot):
     x_dot = np.zeros((12,))
 

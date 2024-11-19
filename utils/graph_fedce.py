@@ -63,7 +63,7 @@ def plot_matrix_norm(pred_thetas, show=True):
         plt.show()
 
 
-def plot_prediction_errors(pred_errs, show=True):
+def plot_prediction_errors(pred_errs, show=True, save_path="plots/prediction_errors.png"):
     fig = plt.figure()
     plt.title("Prediction Errors: $|| \dot{x}_i - \dot{\hat{x}}_i||_2$")
     for i in range(len(pred_errs) // 2):
@@ -72,7 +72,8 @@ def plot_prediction_errors(pred_errs, show=True):
         plt.plot(pred_errs[i], label=f'$\\theta_{i + 1}^*$ Pred')
     plt.xlabel("Number of Updates")
     plt.legend()
-    plt.savefig("plots/prediction_errors.png")
+    if save_path is not None:
+        plt.savefig(save_path)
     if show:
         plt.show()
 

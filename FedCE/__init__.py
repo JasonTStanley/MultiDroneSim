@@ -1,1 +1,1 @@
-from FederatedLearning import *
+from FedCE.FederatedLearning import *

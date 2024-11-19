@@ -181,6 +181,7 @@ class DecentralizedLQR(BaseController):
             pred_gt_xtp1 = self.forward_predict(phi[:-4].flatten(), phi[-4:].flatten(), i, Ahat=self.lin_models[i].A, Bhat=self.lin_models[i].B)
             self.pred_errors[i+self.num_robots].append(np.linalg.norm(x_tp1.T-pred_gt_xtp1))
         self.project_theta()
+        
     def est_x_dot(self, x_tp1, phi):
         # TODO experiment with how this is calculated
         phi = phi.reshape((16,))
