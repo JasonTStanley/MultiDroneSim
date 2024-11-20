@@ -7,7 +7,7 @@ from control.dlqr.decentralized_yolqr_crazyflie import DecentralizedYOLQRCrazyfl
 
 class FederatedLearning:
     
-    def __init__(self, env, lin_models: List[LinearizedYankOmegaModel], Q, R, num_drones=1): 
+    def __init__(self, env, lin_models: List[LinearizedYankOmegaModel], Q, R, P=None, num_drones=1): 
         self.num_drones = num_drones
         self.env = env
         self.linear_models = lin_models
@@ -15,7 +15,7 @@ class FederatedLearning:
         self.n = self.linear_models[0].n
 
 
-        self.dLQR = DecentralizedYOLQRCrazyflie(env, self.linear_models, Q, R)
+        self.dLQR = DecentralizedYOLQRCrazyflie(env, self.linear_models, Q, R, P=P)
         self.x_prev = None
 
     def make_desired_state(self, pos=np.zeros(3), vel=np.zeros(3), yaw=0.0):
@@ -44,10 +44,10 @@ class FederatedLearning:
         self.x_des_prev = x_des
         self.x_prev = xtp1
         self.u_prev = u 
-        self.dLQR.approx_theta_update(phis, e_tp1s)
+        self.dLQR.approx_theta_update(phis, e_tp1s, project=True)
         return phis, e_tp1s
 
-
+    
     def theta_str(self):
         thetaA = self.dLQR.theta[:self.m * self.num_drones, :].T
         thetaB = self.dLQR.theta[self.m * self.num_drones:, :].T
@@ -60,6 +60,8 @@ class FederatedLearning:
     def save_theta(self, filename="theta.npy"):
         np.save(filename, self.dLQR.theta)
     
-    def lqr_control(self, x: YOState, x_des: YOState):
-        return self.dLQR.compute(x,x_des)
+    def lqr_control(self, x: List[YOState], x_des: List[YOState]):
+        return self.dLQR.compute(x, x_des)
     
+    def calc_controller(self):
+        self.dLQR.compute_controller()

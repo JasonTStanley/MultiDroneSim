@@ -149,15 +149,16 @@ class DecentralizedYOLQRCrazyflie:
 
         #TODO Tuning P matrix is important to the model convergence, definitely need to test this.
         if P is None:
-            self.P = np.repeat(20*np.eye(self.mn)[:, :, None], self.num_robots, axis=2).transpose(2, 0, 1)
-            for i in range(self.num_robots):
-                self.P[i][-3:, -3:] = 5_000_000 * np.eye(3)
+            self.P = np.repeat(5*np.eye(self.mn)[:, :, None], self.num_robots, axis=2).transpose(2, 0, 1)
+            # for i in range(self.num_robots):
+            #     self.P[i][-3:, -3:] = 5_000_000 * np.eye(3)
         else:
             self.P = P
 
         self.lqr_controllers = [lqr_YO_controller.LQRYankOmegaController(env, lin_models[i], YOC(env))
                                 for i in range(self.num_robots)]
         self.K = None
+        self.compute_controller()
         self.desired_positions = np.zeros((self.num_robots, 3))
         self.desired_vels = np.zeros((self.num_robots, 3))
         self.desired_yaws = np.zeros(self.num_robots)
@@ -353,6 +354,7 @@ class DecentralizedYOLQRCrazyflie:
         # select out the correct A and B matrices for the robot
         
         # u = -K @ e
+        print("K shape: " + str(self.K.shape))
         us = np.array([-self.K[:, (m * i):m * (i + 1)] @ es[i] for i in range(self.num_robots)])
         u = np.sum(us, axis=0)
 

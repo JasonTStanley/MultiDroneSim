@@ -24,11 +24,17 @@ class CompoundTrajectory(TrajectoryBase):
         self.current_trajectory_time = 0
     
     def __call__(self, t):
-        if t > self.total_time:
+        if t >= self.total_time:
+            #reset the trajectory
+            self.reset()
             return self.trajectories[-1](self.trajectories[-1].get_total_time()) # final pose
-        if t > self.times[self.trajectory_index]:
+        while t > self.times[self.trajectory_index]:
             self.current_trajectory_time = self.times[self.trajectory_index]
             self.trajectory_index += 1
             self.current_trajectory = self.trajectories[self.trajectory_index]
-
+        
+        if (self.trajectory_index - 1) >= 0 and t < self.times[self.trajectory_index-1]:
+            #something is wrong, reset the trajectory and compute again. This on repeat calls if trajectory isn't reset.
+            self.reset()
+            return self(t)
         return self.current_trajectory(t - self.current_trajectory_time)

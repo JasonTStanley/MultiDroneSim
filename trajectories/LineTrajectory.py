@@ -14,7 +14,7 @@ class WaitTrajectory(TrajectoryBase):
         return self.position, np.zeros(3), np.zeros(3), self.yaw, 0
     
 class LineTrajectory(TrajectoryBase):
-    def __init__(self, start: np.ndarray, end: np.ndarray, speed: float = None, duration: float = None, v0=0, vf=0):
+    def __init__(self, start: np.ndarray, end: np.ndarray, speed: float = None, duration: float = None, s0=0, sf=0):
         '''
         :param start: start position xyz
         :param end: end position xyz
@@ -28,23 +28,44 @@ class LineTrajectory(TrajectoryBase):
         self.start = start
         self.end = end
         self.delta = end - start
-        self.v0 = v0
-        self.vf = vf
         self.max_acc = 1.0
         if speed is None:
             self.speed = np.linalg.norm(self.delta) / duration
         else:
             self.speed = speed
+        
+        self.dir = self.delta / np.linalg.norm(self.delta)
 
-        self.delta_v_init = self.speed * self.delta / np.linalg.norm(self.delta) - self.v0
-        self.delta_v_end = self.vf - self.speed * self.delta / np.linalg.norm(self.delta)
+        self.v0 = s0 * self.dir
+        self.vf = sf * self.dir
+
+        self.delta_v_init = self.speed * self.dir  - self.v0
+        self.delta_v_end = self.vf - self.speed * self.dir
         self.time_init = np.linalg.norm(self.delta_v_init) / self.max_acc
         self.time_end = np.linalg.norm(self.delta_v_end) / self.max_acc
-        self.dist_init = self.v0 * self.time_init + 0.5 * self.max_acc * self.time_init ** 2
-        self.dist_end = self.vf * self.time_end + 0.5 * self.max_acc * self.time_end ** 2
-        self.dist_middle = np.linalg.norm(self.delta) - self.dist_init - self.dist_end
-        self.time_middle = self.dist_middle / self.speed
+        self.dist_init = np.linalg.norm(self.v0) * self.time_init + 0.5 * self.max_acc * self.time_init ** 2
+        self.dist_end = np.linalg.norm(self.v0) * self.time_end + 0.5 * self.max_acc * self.time_end ** 2
+
+
+        if self.dist_init + self.dist_end > np.linalg.norm(self.delta):
+            self.time_middle = 0
+            self.dist_middle = 0
+
+            # calculate the speed that can be reached in the given distance
+            self.speed = sf + np.sqrt(np.linalg.norm(self.delta) * self.max_acc) + 0.5*s0**2 - 0.5*sf**2
+            self.delta_v_init = self.speed * self.dir  - self.v0
+            self.delta_v_end = self.vf - self.speed * self.dir
+            self.time_init = np.linalg.norm(self.delta_v_init) / self.max_acc
+            self.time_end = np.linalg.norm(self.delta_v_end) / self.max_acc
+            self.dist_init = np.linalg.norm(self.v0) * self.time_init + 0.5 * self.max_acc * self.time_init ** 2
+            self.dist_end = np.linalg.norm(self.v0) * self.time_end + 0.5 * self.max_acc * self.time_end ** 2
+
+        else:
+            self.dist_middle = np.linalg.norm(self.delta) - self.dist_init - self.dist_end
+            self.time_middle = self.dist_middle / self.speed
+        
         self.total_time = self.time_init + self.time_middle + self.time_end
+
     def get_total_time(self):
         return self.total_time
     def __call__(self, t):
